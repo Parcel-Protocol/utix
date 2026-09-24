@@ -151,7 +151,7 @@ async function main() {
   if (failed.length) process.exit(1);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url).toLowerCase() === path.resolve(process.argv[1]).toLowerCase()) {
   main().catch((error) => {
     console.error(error);
     process.exit(1);
