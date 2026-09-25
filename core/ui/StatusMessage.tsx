@@ -31,6 +31,8 @@ const icons = {
  *
  * Errors use `role="alert"` (assertive); everything else uses a polite status
  * region, so a stream of successes never interrupts a screen-reader user.
+ * `data-contract-state` mirrors the status type for the shared test harness
+ * (`@/core/testing/contract`).
  */
 export function StatusMessage({
   type,
@@ -44,6 +46,7 @@ export function StatusMessage({
 
   return (
     <div
+      data-contract-state={type}
       role={isError ? "alert" : "status"}
       aria-live={isError ? "assertive" : "polite"}
       className={cn(

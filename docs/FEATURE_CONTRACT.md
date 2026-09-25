@@ -155,6 +155,44 @@ check, and never render it back. `features/address-validator` has two tests
 asserting the seed appears in neither component output nor hook state. Every
 slice that takes an address needs the equivalent.
 
+### 11. Tests exercise the runtime contract, not just the file layout
+
+Having a `__tests__/` directory proves nothing about behaviour. Every slice's
+tests must drive it through its **loading**, **error** and **empty** states
+using the shared harness in `@/core/testing/contract`:
+
+```tsx
+import { renderFeatureSlice } from "@/core/testing/contract";
+
+const slice = renderFeatureSlice("balance-viewer", <BalanceViewerPanel />);
+
+slice.expectEmptyState();                          // idle, before any input
+await user.click(screen.getByRole("button", { name: copy.submit }));
+await slice.waitForState("loading");               // request in flight
+await slice.waitForState("error");                 // request failed
+```
+
+The harness asserts against the `data-contract-state` attribute that the shared
+state primitives render — `EmptyState` (`"empty"`), `StatusMessage` (`"error"`,
+`"success"`, …) and `Skeleton`/`SkeletonRows` (`"loading"`) — instead of against
+copy. That is what lets the same three helpers work for a lookup form, a QR
+generator and a wallet-connect flow. A slice with a bespoke indicator (a
+spinner, a skeleton it renders itself) can carry
+`data-contract-state="loading"` on it and get the same treatment.
+
+`npm run verify:features` reads each slice's `__tests__/` sources: if they never
+call `expectLoadingState()`, `expectErrorState()` and `expectEmptyState()` (or
+the generic `expectState("…")` / `waitForState("…")` forms), the slice fails
+with a message naming the state it skips. Slices that predate this rule are
+listed in `scripts/feature-contract-migration.json` and are reported as a
+warning instead of a failure. **That list is a migration ledger: it must only
+shrink, and new slices are never added to it.**
+
+The checker itself is covered by `core/__tests__/verifyFeaturesContract.test.ts`
+against the deliberately minimal `good` and `bad` fixture slices under
+`scripts/__tests__/fixtures/`, so a regression that makes the rule always pass
+(or always fail) fails the normal test run.
+
 ---
 
 ## What "done" means
@@ -166,6 +204,7 @@ npm run check     # registry + lint + test + verify:features + build
 All four must pass, plus:
 
 - [ ] `npm run verify:features -- <slug>` reports OK
+- [ ] Tests drive loading/error/empty through `@/core/testing/contract`
 - [ ] Every error code has copy that says what to do next
 - [ ] `a11y.test.tsx` covers at least two states
 - [ ] `README.md` explains the non-obvious decision in the slice, not just what

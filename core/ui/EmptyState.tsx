@@ -11,8 +11,11 @@ export interface EmptyStateProps {
 }
 
 export function EmptyState({ icon: Icon, title, description, action, className }: EmptyStateProps) {
+  // data-contract-state lets a slice's tests assert this runtime contract
+  // state through @/core/testing/contract instead of matching on copy.
   return (
     <div
+      data-contract-state="empty"
       className={cn(
         "flex flex-col items-center gap-3 rounded-lg border border-dashed border-[#c7d6e8] bg-white/50 p-8 text-center",
         className

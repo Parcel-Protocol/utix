@@ -7,18 +7,75 @@
  * request mocks, an end-to-end spec and its own documentation). Meeting it
  * naturally lands above the 20-changed-file threshold without padding.
  *
+ * The structural rules below answer "does this slice have a test file?". The
+ * runtime contract rule answers the harder question the issue asks: "do its
+ * tests actually exercise the loading, error and empty states?". That check
+ * reads the slice's `__tests__/` sources and requires the shared harness from
+ * `@/core/testing/contract` (see docs/FEATURE_CONTRACT.md).
+ *
  * Run: npm run verify:features [-- <slug>]
  */
 
 import { readdir, readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const featuresDir = path.join(root, "features");
 
 export const MINIMUM_FILES = 20;
+
+/**
+ * Runtime states every slice's tests must exercise. This is the same list the
+ * shared harness exports as `FEATURE_CONTRACT_STATES`.
+ */
+export const CONTRACT_STATES = ["loading", "error", "empty"];
+
+const CONTRACT_HARNESS_MODULE = /from\s+["']@\/core\/testing(?:\/contract)?["']/;
+const CONTRACT_HARNESS_FACTORY = /renderFeatureSlice\s*\(/;
+
+/**
+ * Each state is satisfied by calling the matching harness helper — either the
+ * named method or the generic `expectState` / `waitForState` form.
+ */
+const CONTRACT_STATE_MATCHERS = {
+  loading: [
+    /expectLoadingState\s*\(/,
+    /expectState\(\s*["'`]loading["'`]\s*\)/,
+    /waitForState\(\s*["'`]loading["'`]\s*\)/
+  ],
+  error: [
+    /expectErrorState\s*\(/,
+    /expectState\(\s*["'`]error["'`]\s*\)/,
+    /waitForState\(\s*["'`]error["'`]\s*\)/
+  ],
+  empty: [
+    /expectEmptyState\s*\(/,
+    /expectState\(\s*["'`]empty["'`]\s*\)/,
+    /waitForState\(\s*["'`]empty["'`]\s*\)/
+  ]
+};
+
+const MIGRATION_LEDGER = path.join(root, "scripts", "feature-contract-migration.json");
+
+/**
+ * Slices whose tests still assert the states by hand instead of through the
+ * shared harness. They are reported as a warning, not a failure, so existing
+ * work keeps landing while the migration is in flight. The ledger is a
+ * migration list: it must shrink over time and new slices are never added.
+ */
+export function loadMigrationLedger(ledgerPath = MIGRATION_LEDGER) {
+  if (!existsSync(ledgerPath)) return new Set();
+  try {
+    const parsed = JSON.parse(readFileSync(ledgerPath, "utf8"));
+    const pending = Array.isArray(parsed?.pending) ? parsed.pending : [];
+    return new Set(pending.filter((slug) => typeof slug === "string"));
+  } catch (error) {
+    console.error(`Could not read ${path.relative(root, ledgerPath)}: ${error.message}`);
+    process.exit(1);
+  }
+}
 
 const RULES = [
   { id: "manifest", label: "manifest.ts", check: (f) => f.includes("manifest.ts") },
@@ -86,20 +143,74 @@ async function walk(dir, prefix = "") {
   return out;
 }
 
-async function isNetworkBacked(slug) {
-  const manifestPath = path.join(featuresDir, slug, "manifest.ts");
+function isTestFile(file) {
+  return /\.(test|spec)\.(ts|tsx)$/.test(file);
+}
+
+/**
+ * Reads every test module under `<sliceDir>/__tests__` so the runtime contract
+ * rule can inspect what the suite actually asserts. Exported so the checker's
+ * own test can run it against the good/bad fixture slices.
+ */
+export async function collectTestSources(sliceDir) {
+  const testsDir = path.join(sliceDir, "__tests__");
+  if (!existsSync(testsDir)) return {};
+
+  const files = (await walk(testsDir)).filter(isTestFile);
+  const sources = {};
+  for (const file of files) {
+    sources[`__tests__/${file}`] = await readFile(path.join(testsDir, file), "utf8");
+  }
+  return sources;
+}
+
+/**
+ * Pure contract-coverage evaluation: given a slice's test sources, decide
+ * whether they drive every required state through the shared harness.
+ */
+export function evaluateContractCoverage(slug, sources) {
+  const combined = Object.values(sources).join("\n");
+  const usesHarness =
+    CONTRACT_HARNESS_MODULE.test(combined) && CONTRACT_HARNESS_FACTORY.test(combined);
+  const missing = CONTRACT_STATES.filter(
+    (state) => !CONTRACT_STATE_MATCHERS[state].some((matcher) => matcher.test(combined))
+  );
+
+  return { slug, ok: usesHarness && missing.length === 0, usesHarness, missing };
+}
+
+/** Evaluates the runtime contract for a slice directory on disk. */
+export async function checkContractCoverage(slug, sliceDir) {
+  return evaluateContractCoverage(slug, await collectTestSources(sliceDir));
+}
+
+function contractFailure(result) {
+  if (!result.usesHarness) {
+    return (
+      "__tests__/ — runtime contract: use renderFeatureSlice from @/core/testing/contract " +
+      "to exercise the loading/error/empty states (having a test file is not enough)"
+    );
+  }
+  return (
+    `__tests__/ — runtime contract: missing ${result.missing.join("/")} state assertion(s) ` +
+    "(use expectLoadingState/expectErrorState/expectEmptyState)"
+  );
+}
+
+async function isNetworkBacked(slug, sliceDir) {
+  const manifestPath = path.join(sliceDir, "manifest.ts");
   if (!existsSync(manifestPath)) return false;
   const source = await readFile(manifestPath, "utf8");
   const networks = source.match(/networks:\s*\[([^\]]*)\]/)?.[1] ?? "";
   return networks.trim().length > 0;
 }
 
-export async function verifySlice(slug) {
-  const dir = path.join(featuresDir, slug);
-  const files = await walk(dir);
+export async function verifySlice(slug, options = {}) {
+  const sliceDir = path.join(options.featuresDir ?? featuresDir, slug);
+  const files = await walk(sliceDir);
   const rules = [...RULES];
 
-  if (await isNetworkBacked(slug)) rules.push(NETWORK_RULE);
+  if (await isNetworkBacked(slug, sliceDir)) rules.push(NETWORK_RULE);
 
   const failures = rules
     .filter((rule) => !rule.check(files, slug))
@@ -109,7 +220,20 @@ export async function verifySlice(slug) {
     failures.push(`at least ${MINIMUM_FILES} files (found ${files.length})`);
   }
 
-  return { slug, fileCount: files.length, failures };
+  const contract = await checkContractCoverage(slug, sliceDir);
+  const pending = (options.contractPending ?? loadMigrationLedger()).has(slug);
+  const contractPending = !contract.ok && pending;
+
+  if (!contract.ok && !pending) failures.push(contractFailure(contract));
+
+  return {
+    slug,
+    fileCount: files.length,
+    failures,
+    contractPending,
+    contractMissing: contract.missing,
+    contractUsesHarness: contract.usesHarness
+  };
 }
 
 async function main() {
@@ -136,22 +260,33 @@ async function main() {
   for (const slug of slugs) results.push(await verifySlice(slug));
 
   const failed = results.filter((result) => result.failures.length);
+  const pending = results.filter((result) => result.contractPending);
 
   for (const result of results) {
     const mark = result.failures.length ? "FAIL" : " OK ";
     console.log(`[${mark}] ${result.slug.padEnd(32)} ${String(result.fileCount).padStart(3)} files`);
     for (const failure of result.failures) console.log(`         missing: ${failure}`);
+    // Only spell the migration warning out for a targeted run; the summary
+    // below carries the count for a full sweep so CI output stays readable.
+    if (result.contractPending && requested.length > 0) {
+      const states = result.contractMissing.join(", ");
+      console.log(
+        `         warning: runtime contract not asserted (${states}) — pending migration, ` +
+          `see scripts/feature-contract-migration.json`
+      );
+    }
   }
 
   console.log(
     `\n${results.length} slice(s) checked, ${failed.length} failing, ` +
+      `${pending.length} pending contract migration, ` +
       `${results.reduce((sum, r) => sum + r.fileCount, 0)} files total`
   );
 
   if (failed.length) process.exit(1);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url).toLowerCase() === path.resolve(process.argv[1]).toLowerCase()) {
+if (process.argv[1] && (import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href || fileURLToPath(import.meta.url).toLowerCase() === path.resolve(process.argv[1]).toLowerCase())) {
   main().catch((error) => {
     console.error(error);
     process.exit(1);
