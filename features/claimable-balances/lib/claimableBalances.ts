@@ -115,6 +115,7 @@ export function translateClaimant(
 
   return {
     destination: claimant.destination,
+    predicate: claimant.predicate,
     predicateText: describePredicate(claimant.predicate),
     claimableNow: isPredicateClaimableNow(claimant.predicate, context)
   };

@@ -25,6 +25,13 @@ Each claimant is marked **claimable now** or **not claimable now** by evaluating
 its predicate against the current time. An unconditional predicate is described
 as "can be claimed at any time" rather than shown as an empty object.
 
+Open **Predicate tree** under a claimant to inspect the original nested logical
+structure alongside its human-readable evaluation. Absolute predicates use their
+Horizon timestamp; relative predicates are anchored to the balance funding time
+(`last_modified_time` for the unchanged resource), with boundary comparisons
+handled inclusively for `abs_after`/`rel_after` and exclusively for `abs_before`/
+`rel_before`.
+
 Switching the network clears the result instead of leaving a stale balance on
 screen, because a balance that exists on testnet generally does not exist on
 mainnet.
