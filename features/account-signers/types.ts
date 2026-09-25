@@ -36,6 +36,7 @@ export interface AccountSignersResult {
   isNormalSingleSigner: boolean;
   isMultisig: boolean;
   masterKeyDisabled: boolean;
+  isLockedOut: boolean;
 }
 
 export interface AccountSignersInput {

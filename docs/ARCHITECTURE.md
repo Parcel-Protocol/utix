@@ -103,13 +103,26 @@ module would test the mock instead of the code.
 ## Quality gates
 
 ```bash
-npm run check    # registry → lint → test → verify:features → build
+npm run check    # registry → lint → test → verify:features → verify:issues → verify:fixtures → build
 ```
 
 CI runs the same steps on every pull request, including
 `npm run verify:features`, which fails a slice that does not meet the contract,
-and `npm run verify:issues`, which preserves a backlog of at least 40
-independent specifications with a stable 20-issue advanced wave.
+`npm run verify:issues`, which preserves a backlog of at least 40
+independent specifications with a stable 20-issue advanced wave, and
+`npm run verify:fixtures`, which imports every `features/*/fixtures/*.fixture.ts`
+file and fails with the specific file if a `@stellar/stellar-sdk` upgrade
+broke it.
+
+### SDK upgrades
+
+Fixtures are decentralized — one `fixtures/` directory per slice, owned by
+that slice's contributor — so there is no single place to eyeball after
+bumping `@stellar/stellar-sdk`. Most fixtures build their values with real SDK
+calls (`Keypair`, `TransactionBuilder`, `xdr.*`) rather than hand-typing them,
+so a renamed export or changed constructor throws the moment the fixture
+module loads. Run `npm run verify:fixtures` as part of every SDK-upgrade PR —
+it reports exactly which fixture file failed to import and why.
 
 See [ISSUE_PUBLISHING.md](./ISSUE_PUBLISHING.md) for the five-at-a-time
 GrantFox publication flow.

@@ -123,9 +123,6 @@ export function SequenceInspectorResult({
       />
 
       <div className="flex gap-3">
-        <Button type="button" variant="primary" onClick={onRefresh}>
-          {copy.refresh}
-        </Button>
         <Button type="button" variant="secondary" onClick={onReset}>
           {copy.reset}
         </Button>
