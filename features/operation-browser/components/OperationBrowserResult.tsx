@@ -84,10 +84,13 @@ export function OperationBrowserResult({
             )}
           </Field>
         </div>
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {copy.resultsAnnouncement(filteredCurrentPage.length, result.pageIndex + 1)}
+        </p>
       </Card>
 
       {filteredCurrentPage.length ? (
-        <ol className="space-y-3">
+        <ol aria-label={copy.operationListLabel} className="space-y-3">
           {filteredCurrentPage.map((operation) => (
             <li key={operation.id}>
               <Card
@@ -159,10 +162,21 @@ export function OperationBrowserResult({
       )}
 
       <div className="flex flex-wrap gap-3">
-        <Button type="button" variant="secondary" disabled={!canLoadNewer || paging !== "idle"} onClick={onLoadNewer}>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={!canLoadNewer || paging !== "idle"}
+          aria-busy={paging === "newer"}
+          onClick={onLoadNewer}
+        >
           {copy.loadNewer}
         </Button>
-        <Button type="button" disabled={!canLoadOlder || paging === "older"} onClick={onLoadOlder}>
+        <Button
+          type="button"
+          disabled={!canLoadOlder || paging === "older"}
+          aria-busy={paging === "older"}
+          onClick={onLoadOlder}
+        >
           {paging === "older" ? copy.loadingPage : copy.loadOlder}
         </Button>
       </div>

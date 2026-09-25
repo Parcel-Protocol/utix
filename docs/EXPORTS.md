@@ -33,6 +33,21 @@ const result = exportRecords(
 );
 ```
 
+For consumers that page through changing collections, pass the returned
+`nextCursor` on the next request instead of calculating an offset:
+
+```ts
+const next = exportRecords(
+  { ...request, pageSize: 100, cursor: first.value.nextCursor ?? undefined },
+  mySources
+);
+```
+
+The cursor is anchored to a record key, so inserting records before the
+anchor does not repeat the current page. The legacy `page` field remains
+available for offset-based callers. Filtering by authorization happens before
+cursor keys are generated, so a cursor cannot cross an authorization scope.
+
 A source supplies records and declares its own scope:
 
 ```ts
