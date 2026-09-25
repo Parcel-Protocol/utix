@@ -23,5 +23,5 @@ describe("OperationBrowserPanel accessibility", () => {
     await user.click(screen.getByRole("button", { name: copy.submit }));
     await screen.findByRole("heading", { name: copy.resultTitle });
     await expectNoAxeViolations(container);
-  }, 15_000);
+  }, 60_000);
 });

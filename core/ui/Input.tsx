@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
+import type { ComponentProps, TextareaHTMLAttributes } from "react";
 import { cn } from "@/core/lib/cn";
 
 const base =
@@ -6,7 +6,7 @@ const base =
   "placeholder:text-[#8a98aa] focus:border-[#47a8c7] focus:ring-2 focus:ring-[#8edcf4]/35 " +
   "aria-[invalid=true]:border-[#ec5d55] aria-[invalid=true]:focus:ring-[#ff9a8b]/40";
 
-export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
+export function Input({ className, ...props }: ComponentProps<"input">) {
   return <input className={cn(base, "min-h-12", className)} {...props} />;
 }
 

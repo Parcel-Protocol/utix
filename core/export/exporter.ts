@@ -12,6 +12,7 @@
  */
 
 import { err, ok, type Result } from "@/core/result/result";
+import { paginateByCursor } from "@/core/pagination/cursor";
 import {
   emitTelemetry,
   measureSync,
@@ -64,6 +65,8 @@ export interface ExportRequest {
   /** Optional pagination: how many records per page. */
   pageSize?: number;
   page?: number;
+  /** Opaque cursor returned by a previous page. */
+  cursor?: string;
 }
 
 export interface ExportEnvelope {
@@ -76,6 +79,8 @@ export interface ExportEnvelope {
   recordCount: number;
   page: number;
   totalRecords: number;
+  nextCursor: string | null;
+  hasMore: boolean;
   records: ExportRecord[];
 }
 
@@ -98,6 +103,40 @@ export function authorizeExport(
     return err("export_denied");
   }
   return ok(authScope(actor));
+}
+
+interface CollectedExportRecord {
+  key: string;
+  record: ExportRecord;
+}
+
+function cursorRecordKey(record: ExportRecord, index: number): string {
+  const candidate = record.id ?? record.pagingToken ?? record.paging_token ?? record.index;
+  let value: string;
+  if (typeof candidate === "string" || typeof candidate === "number") {
+    value = String(candidate);
+  } else {
+    try {
+      value = JSON.stringify(record);
+    } catch {
+      value = String(index);
+    }
+  }
+  let hash = 2166136261;
+  for (let position = 0; position < value.length; position += 1) {
+    hash = Math.imul(hash ^ value.charCodeAt(position), 16777619);
+  }
+  return `record-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function collectWithCursorKeys(records: ExportRecord[]): CollectedExportRecord[] {
+  const occurrences = new Map<string, number>();
+  return records.map((record, index) => {
+    const base = cursorRecordKey(record, index);
+    const occurrence = occurrences.get(base) ?? 0;
+    occurrences.set(base, occurrence + 1);
+    return { key: `${base}-${occurrence}`, record };
+  });
 }
 
 /**
@@ -145,13 +184,18 @@ export function exportRecords(
             scope: source.scope
           }))
       );
-
+      const keyed = collectWithCursorKeys(collected);
       const ttlMs = request.ttlMs ?? EXPORT_DEFAULT_TTL_MS;
-      const pageSize = request.pageSize ?? (collected.length > 0 ? collected.length : 1);
-      const page = request.page ?? 1;
-      const start = (page - 1) * pageSize;
-      const paged = collected.slice(start, start + pageSize);
-      const totalRecords = collected.length;
+      const pageSize = Math.max(1, request.pageSize ?? (keyed.length > 0 ? keyed.length : 1));
+      const page = Math.max(1, request.page ?? 1);
+      const cursorPage = paginateByCursor(keyed, {
+        pageSize,
+        cursor: request.cursor,
+        startIndex: (page - 1) * pageSize,
+        getKey: (entry) => entry.key
+      });
+      const paged = cursorPage.items.map((entry) => entry.record);
+      const totalRecords = keyed.length;
 
       const envelope: ExportEnvelope = {
         schemaVersion: request.schemaVersion,
@@ -163,6 +207,8 @@ export function exportRecords(
         recordCount: paged.length,
         page,
         totalRecords,
+        nextCursor: cursorPage.nextCursor,
+        hasMore: cursorPage.hasMore,
         records: paged.map((record) => redact(record) as ExportRecord)
       };
 

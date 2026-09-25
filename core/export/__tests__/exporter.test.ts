@@ -119,6 +119,55 @@ describe("exportRecords", () => {
     expect(result.value.page).toBe(2);
   });
 
+  it("continues with a stable cursor when records are inserted before the anchor", () => {
+    const rows = Array.from({ length: 6 }, (_, index) => ({ id: `row-${index}`, index }));
+    const first = exportRecords(
+      { schemaVersion: EXPORT_CURRENT_SCHEMA_VERSION, scope: "own", actor: { kind: "user" }, pageSize: 2 },
+      [source("cursor", "own", rows.slice(0, 4))]
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = exportRecords(
+      {
+        schemaVersion: EXPORT_CURRENT_SCHEMA_VERSION,
+        scope: "own",
+        actor: { kind: "user" },
+        pageSize: 2,
+        cursor: first.value.nextCursor ?? undefined
+      },
+      [source("cursor", "own", [{ id: "inserted", index: -1 }, ...rows])]
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+
+    expect(second.value.records.map((record) => record.id)).toEqual(["row-2", "row-3"]);
+    expect(second.value.hasMore).toBe(true);
+  });
+
+  it("does not expose source records outside the requested scope through a cursor", () => {
+    const first = exportRecords(
+      { schemaVersion: EXPORT_CURRENT_SCHEMA_VERSION, scope: "own", actor: { kind: "user" }, pageSize: 1 },
+      allSources
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = exportRecords(
+      {
+        schemaVersion: EXPORT_CURRENT_SCHEMA_VERSION,
+        scope: "own",
+        actor: { kind: "user" },
+        pageSize: 1,
+        cursor: first.value.nextCursor ?? undefined
+      },
+      allSources
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.records.every((record) => record.scope === "own")).toBe(true);
+  });
+
   it("redacts secret-shaped values out of exports", () => {
     const result = exportRecords(
       { schemaVersion: EXPORT_CURRENT_SCHEMA_VERSION, scope: "own", actor: { kind: "user" } },

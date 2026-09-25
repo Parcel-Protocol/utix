@@ -6,6 +6,7 @@ export const copy = {
   submit: "Browse operations",
   loading: "Loading operations...",
   loadingPage: "Loading more operations...",
+  retry: "Try again",
   emptyTitle: "No operation history loaded yet",
   emptyDescription:
     "Enter a funded account address to browse its recent operations from Horizon, filter by type, and page through older entries.",
@@ -16,9 +17,22 @@ export const copy = {
   loadNewer: "Show newer",
   noOperationsTitle: "No operations on this page",
   noOperationsDescription: "This account has no operations on the selected network, or the filter removed every loaded row.",
+  operationListLabel: "Loaded operations",
+  resultsAnnouncement: (count: number, page: number) =>
+    `${count} operation${count === 1 ? "" : "s"} shown on page ${page}.`,
   failedOperation: "Failed in transaction",
   successfulOperation: "Succeeded in transaction",
   paramsTitle: "Details",
+  notificationFailureTitle: "Operation history needs attention",
+  notificationFailureMessage: (reason: string) => `The history request could not be completed: ${reason}.`,
+  notificationRetryTitle: "Retrying operation history",
+  notificationRetryMessage: "The last history request is being retried.",
+  notificationCompletedTitle: "Operation history loaded",
+  notificationCompletedMessage: (count: number) => `${count} operation${count === 1 ? "" : "s"} loaded.`,
+  notificationRecoveryTitle: "Operation history recovered",
+  notificationRecoveryMessage: "The account history is available again after a failed request.",
+  notificationHref: (accountId: string) =>
+    `/tools/operation-browser?account=${encodeURIComponent(accountId)}`,
   pagePosition: (page: number, total: number) => `Page ${page} of ${total}`
 } as const;
 

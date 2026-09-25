@@ -1,6 +1,7 @@
 "use client";
 
 import { Card } from "@/core/ui/Card";
+import { Button } from "@/core/ui/Button";
 import { SkeletonRows } from "@/core/ui/Skeleton";
 import { StatusMessage } from "@/core/ui/StatusMessage";
 import { useOperationBrowser } from "@/features/operation-browser/hooks/useOperationBrowser";
@@ -10,7 +11,7 @@ import { OperationBrowserResult } from "@/features/operation-browser/components/
 import { OperationBrowserEmptyState } from "@/features/operation-browser/components/OperationBrowserEmptyState";
 
 export function OperationBrowserPanel() {
-  const { state, submit, loadOlder, loadNewer, setTypeFilter } = useOperationBrowser();
+  const { state, submit, loadOlder, loadNewer, setTypeFilter, retry } = useOperationBrowser();
   const fieldError = state.status === "error" ? state : null;
 
   return (
@@ -38,6 +39,13 @@ export function OperationBrowserPanel() {
           type="error"
           title={errorCopy[state.code].title}
           description={errorCopy[state.code].description}
+          action={
+            state.code !== "empty_input" && state.code !== "invalid_address" ? (
+              <Button type="button" variant="secondary" size="sm" onClick={retry}>
+                {copy.retry}
+              </Button>
+            ) : undefined
+          }
         />
       ) : null}
 

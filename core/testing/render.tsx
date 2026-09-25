@@ -2,6 +2,7 @@ import { render, type RenderOptions, type RenderResult } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import type { ReactElement, ReactNode } from "react";
 import { NetworkProvider } from "@/core/network/NetworkProvider";
+import { NotificationProvider } from "@/core/notifications/NotificationProvider";
 import type { StellarNetwork } from "@/core/network/types";
 
 export interface RenderFeatureOptions extends Omit<RenderOptions, "wrapper"> {
@@ -20,7 +21,11 @@ export function renderFeature(
   { network = "testnet", ...options }: RenderFeatureOptions = {}
 ): RenderResult & { user: ReturnType<typeof userEvent.setup> } {
   function Wrapper({ children }: { children: ReactNode }) {
-    return <NetworkProvider initialNetwork={network}>{children}</NetworkProvider>;
+    return (
+      <NotificationProvider>
+        <NetworkProvider initialNetwork={network}>{children}</NetworkProvider>
+      </NotificationProvider>
+    );
   }
 
   const user = userEvent.setup();

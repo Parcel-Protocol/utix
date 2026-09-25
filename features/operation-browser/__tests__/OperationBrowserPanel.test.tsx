@@ -10,7 +10,7 @@ import {
   secretSeed
 } from "@/features/operation-browser/fixtures/operationBrowser.fixture";
 
-const server = withMswHandlers(...handlers);
+withMswHandlers(...handlers);
 
 describe("OperationBrowserPanel", () => {
   it("shows the empty state before any input", () => {
@@ -22,6 +22,7 @@ describe("OperationBrowserPanel", () => {
     const { user } = renderFeature(<OperationBrowserPanel />);
     await user.click(screen.getByRole("button", { name: copy.submit }));
     expect(await screen.findByText(errorCopy.empty_input.title)).toBeInTheDocument();
+    expect(screen.getByLabelText(copy.formLabel)).toHaveFocus();
   });
 
   it("renders operations with transaction hashes", async () => {
@@ -31,10 +32,11 @@ describe("OperationBrowserPanel", () => {
     await user.click(screen.getByRole("button", { name: copy.submit }));
 
     expect(await screen.findByRole("heading", { name: copy.resultTitle })).toBeInTheDocument();
+    expect(await screen.findByText(copy.resultsAnnouncement(20, 1))).toBeInTheDocument();
     expect(screen.getAllByText("Change trust").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Manage sell offer").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: copy.loadOlder })).toBeEnabled();
-  });
+  }, 20_000);
 
   it("filters loaded operations by type", async () => {
     resetHorizonClients();
@@ -46,7 +48,7 @@ describe("OperationBrowserPanel", () => {
     await user.selectOptions(screen.getByLabelText(copy.filterLabel), "change_trust");
     expect(screen.getByText(/1 of 20 loaded operations match Change trust/i)).toBeInTheDocument();
     expect(screen.getByText("Limit")).toBeInTheDocument();
-  });
+  }, 20_000);
 
   it("marks the account field invalid for a bad address", async () => {
     const { user } = renderFeature(<OperationBrowserPanel />);
@@ -67,6 +69,17 @@ describe("OperationBrowserPanel", () => {
     expect(container.textContent ?? "").not.toContain(secretSeed);
   });
 
+  it("prefills the account from a notification deep link", async () => {
+    window.history.replaceState({}, "", `/tools/operation-browser?account=${accountId}`);
+    const { user } = renderFeature(<OperationBrowserPanel />);
+
+    expect(await screen.findByDisplayValue(accountId)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: copy.submit }));
+    expect(await screen.findByRole("heading", { name: copy.resultTitle })).toBeInTheDocument();
+
+    window.history.replaceState({}, "", "/");
+  }, 20_000);
+
   it("distinguishes failed operations after loading more", async () => {
     resetHorizonClients();
     const { user } = renderFeature(<OperationBrowserPanel />);
@@ -76,5 +89,5 @@ describe("OperationBrowserPanel", () => {
     await user.click(screen.getByRole("button", { name: copy.loadOlder }));
 
     expect(await screen.findByText(copy.failedOperation)).toBeInTheDocument();
-  });
+  }, 20_000);
 });

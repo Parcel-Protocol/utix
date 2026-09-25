@@ -75,11 +75,26 @@ npm run verify:contract      # run the API contract drift tests
 npm run test:workers         # run the background worker suite
 npm run issues               # preview the next five GrantFox issue payloads
 npm run test                 # unit, hook, component and accessibility tests
+npm run test:e2e              # full Playwright suite
+npm run test:e2e:critical     # deterministic account-history journey
 npm run test:coverage        # unit tests with a coverage summary
 npm run lint
 npm run build
 npm run check                # everything CI runs
 ```
+
+The critical journey is the public account-history flow: enter an address,
+load operation history, follow its cursor, and recover from a transient
+request failure. Its Playwright tests use fixed SDK-derived fixtures and route
+all Horizon calls locally; `npm run test:e2e:critical` is the reproducible
+local command.
+
+For the account-history accessibility pass, manually verify keyboard-only
+entry and submission, visible focus after an invalid address, announced
+validation and request errors, filter and pager updates, notification
+open/close/read states, and 200% zoom without clipped controls. Run the
+component axe suite with `npm test` and record a browser and screen-reader
+version in the issue before submitting.
 
 ## Contributing
 
