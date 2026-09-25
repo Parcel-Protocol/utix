@@ -1,4 +1,5 @@
 import type { HTMLAttributes } from "react";
+import { AlertCircle, CheckCircle2, Info, TriangleAlert } from "lucide-react";
 import { cn } from "@/core/lib/cn";
 
 type BadgeTone = "success" | "info" | "warning" | "danger" | "muted";
@@ -15,15 +16,27 @@ const tones: Record<BadgeTone, string> = {
   muted: "border-[#c7b9f3]/70 bg-[#f1edff] text-[#5b4b8a]"
 };
 
+const icons = {
+  success: CheckCircle2,
+  info: Info,
+  warning: TriangleAlert,
+  danger: AlertCircle,
+  muted: Info
+} as const;
+
 export function Badge({ className, tone = "muted", ...props }: BadgeProps) {
+  const Icon = icons[tone];
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-3 py-1 text-xs font-extrabold uppercase tracking-wide",
+        "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-extrabold uppercase tracking-wide",
         tones[tone],
         className
       )}
       {...props}
-    />
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      {props.children}
+    </span>
   );
 }

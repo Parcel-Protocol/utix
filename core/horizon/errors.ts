@@ -20,6 +20,30 @@ export interface HorizonErrorDetail {
   detail?: string;
 }
 
+export interface HorizonErrorClassification {
+  code: HorizonErrorCode;
+  detail: HorizonErrorDetail;
+  retryable: boolean;
+  safeMessage: string;
+  correlationId: string;
+}
+
+function correlationId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `hzn-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const safeMessages: Record<HorizonErrorCode, string> = {
+  not_found: "The requested record was not found on this network.",
+  rate_limited: "Horizon is temporarily rate limiting requests. Try again shortly.",
+  bad_request: "Horizon rejected the request. Check the supplied value and try again.",
+  server_error: "Horizon is temporarily unavailable. Try again shortly.",
+  network_unavailable: "The network connection is unavailable. Check your connection and try again.",
+  timeout: "Horizon did not respond in time. Try again.",
+  unknown: "The request could not be completed. Try again or contact support with the correlation ID."
+};
+
 export function responseStatusOf(error: unknown): number | undefined {
   if (typeof error !== "object" || error === null) return undefined;
 
@@ -36,10 +60,7 @@ export function responseStatusOf(error: unknown): number | undefined {
   return undefined;
 }
 
-export function classifyHorizonError(error: unknown): {
-  code: HorizonErrorCode;
-  detail: HorizonErrorDetail;
-} {
+export function classifyHorizonError(error: unknown): HorizonErrorClassification {
   const status = responseStatusOf(error);
   const detail: HorizonErrorDetail = { status };
 
@@ -50,18 +71,23 @@ export function classifyHorizonError(error: unknown): {
     if (data?.detail) detail.detail = data.detail;
   }
 
-  if (status === 404) return { code: "not_found", detail };
-  if (status === 429) return { code: "rate_limited", detail };
-  if (status === 400 || status === 422) return { code: "bad_request", detail };
-  if (typeof status === "number" && status >= 500) return { code: "server_error", detail };
+  let code: HorizonErrorCode = "unknown";
+  if (status === 404) code = "not_found";
+  else if (status === 429) code = "rate_limited";
+  else if (status === 400 || status === 422) code = "bad_request";
+  else if (typeof status === "number" && status >= 500) code = "server_error";
 
-  const message = error instanceof Error ? error.message.toLowerCase() : "";
-  if (message.includes("abort") || message.includes("timeout")) {
-    return { code: "timeout", detail };
-  }
-  if (message.includes("fetch") || message.includes("network")) {
-    return { code: "network_unavailable", detail };
+  if (code === "unknown") {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (message.includes("abort") || message.includes("timeout")) code = "timeout";
+    else if (message.includes("fetch") || message.includes("network")) code = "network_unavailable";
   }
 
-  return { code: "unknown", detail };
+  return {
+    code,
+    detail,
+    retryable: code === "rate_limited" || code === "server_error" || code === "network_unavailable" || code === "timeout",
+    safeMessage: safeMessages[code],
+    correlationId: correlationId()
+  };
 }

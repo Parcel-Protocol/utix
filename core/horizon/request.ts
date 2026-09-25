@@ -1,3 +1,5 @@
+import { emitTelemetry, errorCodeOf, newCorrelationId } from "@/core/telemetry/telemetry";
+
 export const HORIZON_REQUEST_TIMEOUT_MS = 10_000;
 
 export class HorizonRequestCancelledError extends Error {
@@ -28,6 +30,8 @@ export function isTimeoutError(error: unknown): boolean {
 export interface HorizonRequestOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Correlation id to thread through telemetry for this request. */
+  correlationId?: string;
 }
 
 /**
@@ -49,6 +53,20 @@ export function runHorizonRequest<T>(
 
   if (signal?.aborted) return Promise.reject(new HorizonRequestCancelledError());
 
+  const start = performance.now();
+  const correlationId = options.correlationId ?? newCorrelationId();
+
+  const emit = (result: "success" | "failure", errorCode?: string): void => {
+    emitTelemetry({
+      op: "horizon.request",
+      actorType: "client",
+      result,
+      latencyMs: performance.now() - start,
+      correlationId,
+      errorCode
+    });
+  };
+
   return new Promise<T>((resolve, reject) => {
     let settled = false;
 
@@ -64,18 +82,27 @@ export function runHorizonRequest<T>(
       callback();
     };
 
-    const handleAbort = () => settle(() => reject(new HorizonRequestCancelledError()));
+    const handleAbort = () => {
+      emit("failure", "cancelled");
+      settle(() => reject(new HorizonRequestCancelledError()));
+    };
 
     signal?.addEventListener("abort", handleAbort, { once: true });
 
-    const timeoutId = setTimeout(
-      () => settle(() => reject(new HorizonRequestTimeoutError())),
-      timeoutMs
-    );
+    const timeoutId = setTimeout(() => {
+      emit("failure", "timeout");
+      settle(() => reject(new HorizonRequestTimeoutError()));
+    }, timeoutMs);
 
     Promise.resolve(request).then(
-      (value) => settle(() => resolve(value)),
-      (error) => settle(() => reject(error))
+      (value) => {
+        emit("success");
+        settle(() => resolve(value));
+      },
+      (error) => {
+        emit("failure", errorCodeOf(error));
+        settle(() => reject(error));
+      }
     );
   });
 }

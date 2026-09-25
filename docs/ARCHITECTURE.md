@@ -12,17 +12,21 @@ scripts/     registry generation, scaffolding, contract verification
 
 ## core/
 
-| Module          | Responsibility                                                 |
-| --------------- | -------------------------------------------------------------- |
-| `core/result`   | `Result<T, Code>` — the shared success/failure shape           |
-| `core/network`  | Network selection, URLs, passphrases, `NetworkProvider`        |
-| `core/horizon`  | Memoised Horizon client and the shared error taxonomy          |
-| `core/rpc`      | Minimal Soroban JSON-RPC caller                                |
-| `core/registry` | Feature manifest types and the generated registry              |
-| `core/ui`       | Accessible primitives: `Field`, `StatusMessage`, `DataList`, … |
-| `core/layout`   | App shell, header, sidebar                                     |
-| `core/testing`  | `renderFeature`, MSW harness, axe assertions                   |
-| `core/lib`      | `cn`, clipboard, string helpers                                |
+| Module | Responsibility |
+| --- | --- |
+| `core/result` | `Result<T, Code>` — the shared success/failure shape |
+| `core/telemetry` | Structured, redacted logs for every critical path |
+| `core/workers` | Background worker framework: delayed, retryable, dead-lettered jobs |
+| `core/export` | Privacy-safe, scoped, schema-versioned data exports |
+| `core/contract` | API contract schemas and drift detection |
+| `core/network` | Network selection, URLs, passphrases, `NetworkProvider` |
+| `core/horizon` | Memoised Horizon client and the shared error taxonomy |
+| `core/rpc` | Minimal Soroban JSON-RPC caller |
+| `core/registry` | Feature manifest types and the generated registry |
+| `core/ui` | Accessible primitives: `Field`, `StatusMessage`, `DataList`, … |
+| `core/layout` | App shell, header, sidebar |
+| `core/testing` | `renderFeature`, MSW harness, axe assertions |
+| `core/lib` | `cn`, clipboard, string helpers |
 
 Core is where cross-cutting behaviour lives. A change here affects every tool,
 so it is deliberately small and separate from the work contributors do.
