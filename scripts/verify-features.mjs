@@ -286,7 +286,7 @@ async function main() {
   if (failed.length) process.exit(1);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && (import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href || fileURLToPath(import.meta.url).toLowerCase() === path.resolve(process.argv[1]).toLowerCase())) {
   main().catch((error) => {
     console.error(error);
     process.exit(1);
