@@ -2,6 +2,7 @@ import { Card, CardHeader, CardTitle } from "@/core/ui/Card";
 import { CopyableValue } from "@/core/ui/CopyableValue";
 import { DataList } from "@/core/ui/DataList";
 import { StatusMessage } from "@/core/ui/StatusMessage";
+import { VirtualizedList } from "@/core/ui/VirtualizedList";
 import { copy } from "@/features/transaction-lookup/copy";
 import {
   formatFee,
@@ -53,20 +54,18 @@ export function TransactionLookupResult({ transaction }: { transaction: Transact
         </CardHeader>
 
         {transaction.operations.length ? (
-          <ol className="space-y-2">
-            {transaction.operations.map((operation, index) => (
-              <li
-                key={operation.id}
-                className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-[#e3ebf5] bg-white/60 px-3 py-2 text-sm"
-              >
+          <VirtualizedList
+            items={transaction.operations}
+            label={copy.operationsTitle}
+            getKey={(operation) => operation.id}
+            renderItem={(operation, index) => (
+              <div className="flex h-full flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-[#e3ebf5] bg-white/60 px-3 py-2 text-sm">
                 <span className="font-mono text-xs text-[#8a98aa]">#{index + 1}</span>
-                <span className="font-semibold text-[#172033]">
-                  {formatOperationType(operation.type)}
-                </span>
+                <span className="font-semibold text-[#172033]">{formatOperationType(operation.type)}</span>
                 <CopyableValue label="operation source" value={operation.sourceAccount} visible={4} />
-              </li>
-            ))}
-          </ol>
+              </div>
+            )}
+          />
         ) : (
           <p className="text-sm text-[#68758a]">{copy.noOperations}</p>
         )}

@@ -1,3 +1,5 @@
+import type { HorizonPredicate } from "@/features/claimable-balances/lib/predicate";
+
 export type ClaimableBalancesMode = "account" | "balance";
 
 export type ClaimableBalancesInput =
@@ -13,6 +15,7 @@ export interface ClaimableBalanceAsset {
 
 export interface TranslatedClaimant {
   destination: string;
+  predicate: HorizonPredicate;
   predicateText: string;
   claimableNow: boolean;
 }

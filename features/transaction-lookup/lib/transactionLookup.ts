@@ -30,6 +30,12 @@ interface HorizonOperation {
   source_account: string;
 }
 
+interface HorizonOperationsPage {
+  records: HorizonOperation[];
+  _links?: { next?: { href?: string } };
+  next?: () => Promise<HorizonOperationsPage>;
+}
+
 export function normalizeTransaction(
   transaction: HorizonTransaction,
   operations: HorizonOperation[]
@@ -79,8 +85,14 @@ export async function lookupTransaction(
     // operations is still worth showing, so this failure is non-fatal.
     let operations: HorizonOperation[] = [];
     try {
-      const page = await server.operations().forTransaction(hash).limit(200).call();
-      operations = page.records as unknown as HorizonOperation[];
+      let page = (await server.operations().forTransaction(hash).limit(200).call()) as unknown as HorizonOperationsPage;
+      operations = page.records;
+      while (page._links?.next?.href && typeof page.next === "function") {
+        const nextPage = await page.next();
+        if (!nextPage.records.length) break;
+        operations = operations.concat(nextPage.records);
+        page = nextPage;
+      }
     } catch {
       operations = [];
     }
