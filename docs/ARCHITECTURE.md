@@ -18,6 +18,7 @@ scripts/     registry generation, scaffolding, contract verification
 | `core/network` | Network selection, URLs, passphrases, `NetworkProvider` |
 | `core/horizon` | Memoised Horizon client and the shared error taxonomy |
 | `core/rpc` | Minimal Soroban JSON-RPC caller |
+| `core/format` | Stellar amount parsing/formatting and date formatting, locale-aware and exact |
 | `core/registry` | Feature manifest types and the generated registry |
 | `core/ui` | Accessible primitives: `Field`, `StatusMessage`, `DataList`, … |
 | `core/layout` | App shell, header, sidebar |
@@ -109,3 +110,10 @@ independent specifications with a stable 20-issue advanced wave.
 
 See [ISSUE_PUBLISHING.md](./ISSUE_PUBLISHING.md) for the five-at-a-time
 GrantFox publication flow.
+
+## Decision records
+
+Why the architecture is shaped this way — slices, the generated registry,
+`Result` error codes, slice-local fixtures, the runtime contract ledger and
+shared formatting — is recorded in [adr/](./adr/README.md). Read the relevant
+record before proposing to change one of those decisions.
