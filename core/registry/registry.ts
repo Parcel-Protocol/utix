@@ -1,20 +1,20 @@
-import { generatedPanels } from "@/core/registry/panels.generated";
+import { generatedFeatures } from "@/core/registry/registry.generated";
 import { findManifest } from "@/core/registry/manifests";
 import type { FeatureEntry } from "@/core/registry/types";
 
 /**
- * Panel lookup used by the `/tools/[slug]` route only.
+ * Feature lookup used by the `/tools/[slug]` route only.
  *
- * `panels.generated.ts` maps each slug to a `next/dynamic` import so a tool
- * page ships its own panel and nothing else. Both generated files are produced
- * by `scripts/generate-registry.mjs` and are gitignored — that is what lets
- * many feature branches stay open without touching a shared file.
+ * The registry keeps manifest metadata eagerly available for navigation/search,
+ * while each entry exposes a lazy loader for the panel implementation. That way
+ * the shared nav bundle stays metadata-only and the active tool's code loads on
+ * demand.
  */
 export function findFeature(slug: string): FeatureEntry | undefined {
   const manifest = findManifest(slug);
-  const Panel = generatedPanels[slug];
-  if (!manifest || !Panel) return undefined;
-  return { manifest, Panel };
+  const feature = generatedFeatures.find((entry) => entry.manifest.slug === slug);
+  if (!manifest || !feature) return undefined;
+  return { manifest, load: feature.load };
 }
 
 export { featureHref, featureSlugs, manifests, manifestsByCategory } from "@/core/registry/manifests";

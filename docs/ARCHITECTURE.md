@@ -12,17 +12,17 @@ scripts/     registry generation, scaffolding, contract verification
 
 ## core/
 
-| Module | Responsibility |
-| --- | --- |
-| `core/result` | `Result<T, Code>` — the shared success/failure shape |
-| `core/network` | Network selection, URLs, passphrases, `NetworkProvider` |
-| `core/horizon` | Memoised Horizon client and the shared error taxonomy |
-| `core/rpc` | Minimal Soroban JSON-RPC caller |
-| `core/registry` | Feature manifest types and the generated registry |
-| `core/ui` | Accessible primitives: `Field`, `StatusMessage`, `DataList`, … |
-| `core/layout` | App shell, header, sidebar |
-| `core/testing` | `renderFeature`, MSW harness, axe assertions |
-| `core/lib` | `cn`, clipboard, string helpers |
+| Module          | Responsibility                                                 |
+| --------------- | -------------------------------------------------------------- |
+| `core/result`   | `Result<T, Code>` — the shared success/failure shape           |
+| `core/network`  | Network selection, URLs, passphrases, `NetworkProvider`        |
+| `core/horizon`  | Memoised Horizon client and the shared error taxonomy          |
+| `core/rpc`      | Minimal Soroban JSON-RPC caller                                |
+| `core/registry` | Feature manifest types and the generated registry              |
+| `core/ui`       | Accessible primitives: `Field`, `StatusMessage`, `DataList`, … |
+| `core/layout`   | App shell, header, sidebar                                     |
+| `core/testing`  | `renderFeature`, MSW harness, axe assertions                   |
+| `core/lib`      | `cn`, clipboard, string helpers                                |
 
 Core is where cross-cutting behaviour lives. A change here affects every tool,
 so it is deliberately small and separate from the work contributors do.
@@ -34,14 +34,14 @@ specification is in [FEATURE_CONTRACT.md](./FEATURE_CONTRACT.md).
 
 ## The generated registry
 
-`scripts/generate-registry.mjs` scans `features/*/manifest.ts` and writes three
-files into `core/registry/`:
+`scripts/generate-registry.mjs` scans `features/*/manifest.ts` and writes the
+manifest list plus lazy loaders into `core/registry/`:
 
-| File | Used by |
-| --- | --- |
-| `manifests.generated.ts` | Navigation, dashboard, search, `generateStaticParams` |
-| `panels.generated.ts` | The `/tools/[slug]` route, via `next/dynamic` |
-| `registry.generated.ts` | Direct entry lookup |
+| File                     | Used by                                                               |
+| ------------------------ | --------------------------------------------------------------------- |
+| `manifests.generated.ts` | Navigation, dashboard, search, `generateStaticParams`                 |
+| `registry.generated.ts`  | Direct entry lookup with `load: () => import("@/features/.../panel")` |
+| `panels.generated.ts`    | Optional lazy map kept for analysis/debugging only                    |
 
 All three are **gitignored** and regenerated automatically on `predev`,
 `prebuild`, `pretest`, `prelint` and `postinstall`.
@@ -53,8 +53,11 @@ than committed:
 - dozens of feature branches can be open without conflicting,
 - and navigation, routing and search stay in sync automatically.
 
-Splitting manifests from panels also means listing 40 tools never pulls 40 tool
-implementations into the bundle — a tool page loads only its own panel.
+The registry keeps a metadata-only manifest and a lazy implementation loader. A
+feature's metadata is eagerly imported so nav/search can render instantly, while
+its panel implementation is only fetched when the tool route is visited. The
+shared bundle budget is therefore: zero eager feature-panel imports and zero
+module-side costs from individual slice implementations in the landing page.
 
 ## Routing
 
