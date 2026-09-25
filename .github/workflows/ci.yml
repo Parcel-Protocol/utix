@@ -53,6 +53,15 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Check bundle budgets
+        run: node scripts/bundle-budget.mjs
+
+      - name: Validate disaster recovery
+        run: npm run recovery:validate
+
+      - name: Check operational health
+        run: npm run health:check
+
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
