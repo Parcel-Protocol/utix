@@ -10,6 +10,11 @@ import {
   SOROBAN_RPC_URLS
 } from "@/core/network/config";
 import { isStellarNetwork, type StellarNetwork } from "@/core/network/types";
+import {
+  PRUNE_HORIZON_CLIENTS_DELAY_MS,
+  PRUNE_HORIZON_CLIENTS_OP,
+  getMaintenanceFramework
+} from "@/core/workers/maintenance";
 
 export interface NetworkContextValue {
   network: StellarNetwork;
@@ -79,6 +84,15 @@ export function NetworkProvider({
   const setNetwork = useCallback((next: StellarNetwork) => {
     setOverride(undefined);
     writeNetwork(next);
+    // The Horizon client is memoised per network; a pruning job is enqueued as
+    // delayed maintenance work so rapid switches settle before the cache is torn down.
+    if (next !== getSnapshot()) {
+      getMaintenanceFramework().enqueue({
+        operation: PRUNE_HORIZON_CLIENTS_OP,
+        params: { network: next },
+        delayMs: PRUNE_HORIZON_CLIENTS_DELAY_MS
+      });
+    }
   }, []);
 
   const value = useMemo<NetworkContextValue>(

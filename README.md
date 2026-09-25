@@ -20,6 +20,10 @@ contributors work in parallel without ever conflicting.
 See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) and
 [docs/FEATURE_CONTRACT.md](./docs/FEATURE_CONTRACT.md).
 
+Infrastructure docs: [Telemetry](./docs/TELEMETRY.md) ·
+[Workers](./docs/WORKERS.md) · [Exports](./docs/EXPORTS.md) ·
+[API Contract](./docs/API_CONTRACT.md).
+
 ## Tools
 
 | Tool | What it does |
@@ -66,6 +70,9 @@ npm run registry             # regenerate the feature registry
 npm run new:feature          # scaffold a complete feature slice
 npm run verify:features      # check every slice against the feature contract
 npm run verify:issues        # check 40+ independent issues and the advanced wave
+npm run verify:telemetry     # verify >= 5 operations are instrumented
+npm run verify:contract      # run the API contract drift tests
+npm run test:workers         # run the background worker suite
 npm run issues               # preview the next five GrantFox issue payloads
 npm run test                 # unit, hook, component and accessibility tests
 npm run test:coverage        # unit tests with a coverage summary

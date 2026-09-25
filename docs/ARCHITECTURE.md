@@ -15,6 +15,10 @@ scripts/     registry generation, scaffolding, contract verification
 | Module | Responsibility |
 | --- | --- |
 | `core/result` | `Result<T, Code>` — the shared success/failure shape |
+| `core/telemetry` | Structured, redacted logs for every critical path |
+| `core/workers` | Background worker framework: delayed, retryable, dead-lettered jobs |
+| `core/export` | Privacy-safe, scoped, schema-versioned data exports |
+| `core/contract` | API contract schemas and drift detection |
 | `core/network` | Network selection, URLs, passphrases, `NetworkProvider` |
 | `core/horizon` | Memoised Horizon client and the shared error taxonomy |
 | `core/rpc` | Minimal Soroban JSON-RPC caller |
