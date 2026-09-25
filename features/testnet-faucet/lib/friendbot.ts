@@ -1,5 +1,6 @@
 import { err, ok, type Result } from "@/core/result/result";
 import { FRIENDBOT_URL } from "@/core/network/config";
+import { isFeatureEnabled } from "@/core/feature-flags/flags";
 import { toFaucetErrorCode } from "@/features/testnet-faucet/lib/friendbot.errors";
 import type {
   FaucetErrorCode,
@@ -53,7 +54,10 @@ export async function classifyFriendbotResponse(response: Response): Promise<Fau
   if (response.status === 429) return "rate_limited";
   if (response.status >= 500) return "friendbot_unavailable";
 
-  if (response.status === 400) {
+  if (
+    response.status === 400 &&
+    isFeatureEnabled("detailedFriendbotClassification")
+  ) {
     let text = "";
     try {
       text = (await response.text()).toLowerCase();
