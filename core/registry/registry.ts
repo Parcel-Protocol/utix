@@ -1,4 +1,8 @@
-import { generatedPanels } from "@/core/registry/panels.generated";
+import {
+  generatedPanels,
+  generatedRegistrySchemaVersion
+} from "@/core/registry/panels.generated";
+import { assertFeatureRegistryVersion } from "@/core/registry/schema";
 import { findManifest } from "@/core/registry/manifests";
 import type { FeatureEntry } from "@/core/registry/types";
 
@@ -10,6 +14,8 @@ import type { FeatureEntry } from "@/core/registry/types";
  * by `scripts/generate-registry.mjs` and are gitignored — that is what lets
  * many feature branches stay open without touching a shared file.
  */
+assertFeatureRegistryVersion(generatedRegistrySchemaVersion, "tool panel registry");
+
 export function findFeature(slug: string): FeatureEntry | undefined {
   const manifest = findManifest(slug);
   const Panel = generatedPanels[slug];

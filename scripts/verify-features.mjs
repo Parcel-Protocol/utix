@@ -20,9 +20,27 @@ import { readdir, readFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { REGISTRY_SCHEMA_VERSION } from "./generate-registry.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const featuresDir = path.join(root, "features");
+const registryDir = path.join(root, "core", "registry");
+
+export function assertGeneratedRegistryVersion(source, filename, expected = REGISTRY_SCHEMA_VERSION) {
+  const actual = Number(source.match(/generatedRegistrySchemaVersion\s*=\s*(\d+)/)?.[1]);
+  if (actual !== expected) {
+    throw new Error(
+      `[registry] ${filename} uses schema v${Number.isFinite(actual) ? actual : "unknown"}; ` +
+        `verify:features expects v${expected}. Run npm run registry, then update consumers before bumping the schema.`
+    );
+  }
+}
+
+export async function verifyGeneratedRegistryVersions(directory = registryDir) {
+  for (const filename of ["manifests.generated.ts", "panels.generated.ts", "registry.generated.ts"]) {
+    assertGeneratedRegistryVersion(await readFile(path.join(directory, filename), "utf8"), filename);
+  }
+}
 
 export const MINIMUM_FILES = 20;
 
@@ -127,6 +145,19 @@ const NETWORK_RULE = {
   check: (f) => f.includes("msw/handlers.ts")
 };
 
+const NETWORK_CALL = /\b(?:fetch|horizonServer|runHorizonRequest|getHorizonServer)\s*\(/;
+
+async function checkNetworkEpochUsage(sliceDir, files) {
+  const sources = await Promise.all(
+    files.filter((file) => /\.(ts|tsx)$/.test(file) && !file.includes("__tests__") && !file.includes("fixtures/"))
+      .map((file) => readFile(path.join(sliceDir, file), "utf8"))
+  );
+  if (!sources.some((source) => NETWORK_CALL.test(source))) return true;
+  const manifest = await readFile(path.join(sliceDir, "manifest.ts"), "utf8");
+  if (/networkEpochIndependent\s*:\s*true/.test(manifest)) return true;
+  return sources.some((source) => /\buseNetwork\s*\(/.test(source));
+}
+
 async function walk(dir, prefix = "") {
   const out = [];
   const dirents = await readdir(dir, { withFileTypes: true });
@@ -216,6 +247,10 @@ export async function verifySlice(slug, options = {}) {
     .filter((rule) => !rule.check(files, slug))
     .map((rule) => rule.label);
 
+  if (!(await checkNetworkEpochUsage(sliceDir, files))) {
+    failures.push("network calls must consume the shared NetworkContext epoch through useNetwork()");
+  }
+
   if (files.length < MINIMUM_FILES) {
     failures.push(`at least ${MINIMUM_FILES} files (found ${files.length})`);
   }
@@ -237,6 +272,7 @@ export async function verifySlice(slug, options = {}) {
 }
 
 async function main() {
+  await verifyGeneratedRegistryVersions();
   const requested = process.argv.slice(2).filter((arg) => !arg.startsWith("-"));
 
   if (!existsSync(featuresDir)) {

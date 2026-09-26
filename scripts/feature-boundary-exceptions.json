@@ -1,0 +1,15 @@
+{
+  "$comment": "Reviewed legacy dependencies only. New exceptions require a concrete architectural reason and maintainer approval.",
+  "exceptions": [
+    {
+      "owner": "batch-address-validator",
+      "target": "address-validator",
+      "reason": "Legacy batch implementation delegates its single-address validation contract; migrate the shared validator to core before removing."
+    },
+    {
+      "owner": "claimable-balances",
+      "target": "balance-viewer",
+      "reason": "Legacy amount formatter dependency; migrate formatting to core before removing."
+    }
+  ]
+}

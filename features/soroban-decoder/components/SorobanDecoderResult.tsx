@@ -8,7 +8,7 @@ function TreeNode({ node }: { node: ScValNode }) {
   return (
     <div className="pl-4 border-l my-1">
       <div className="flex items-center gap-2 text-xs">
-        <Badge variant="neutral">{node.type}</Badge>
+        <Badge tone="muted">{node.type}</Badge>
         <span className="font-mono">{node.value}</span>
       </div>
       {node.children ? (
@@ -29,7 +29,7 @@ export function SorobanDecoderResult({ result }: { result: SorobanDecoderResult 
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle>{copy.resultTitle}</CardTitle>
-            <Badge variant={result.specAvailable ? "success" : "warning"}>
+            <Badge tone={result.specAvailable ? "success" : "warning"}>
               {result.specAvailable ? copy.specAvailable : copy.specFallback}
             </Badge>
           </div>

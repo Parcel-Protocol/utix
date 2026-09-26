@@ -1,6 +1,6 @@
 import { encodeMuxedAccountToAddress, StrKey, xdr } from "@stellar/stellar-sdk";
 import { err, ok, type Result } from "@/core/result/result";
-import type { Network } from "@/core/network/network";
+import type { StellarNetwork as Network } from "@/core/network/types";
 import type {
   DecodedOperation,
   DecodedTransactionResult,
@@ -21,6 +21,10 @@ function formatMuxed(muxed: xdr.MuxedAccount): { address: string; isMuxed: boole
 function decodeSingleOp(op: xdr.Operation, index: number): DecodedOperation {
   const body = op.body();
   const typeName = body.switch().name;
+  // The SDK models this XDR union at runtime, but its generated declaration
+  // omits the discriminant-specific accessors used after the switch above.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const value = body as any;
   let sourceAccount: string | null = null;
   const opSource = op.sourceAccount();
   if (opSource) {
@@ -35,7 +39,7 @@ function decodeSingleOp(op: xdr.Operation, index: number): DecodedOperation {
 
   switch (typeName) {
     case "payment": {
-      const p = body.payment();
+      const p = value.payment();
       const dest = formatMuxed(p.destination());
       isMuxedDestination = dest.isMuxed;
       details["Destination"] = dest.address;
@@ -44,7 +48,7 @@ function decodeSingleOp(op: xdr.Operation, index: number): DecodedOperation {
       break;
     }
     case "pathPaymentStrictReceive": {
-      const p = body.pathPaymentStrictReceive();
+      const p = value.pathPaymentStrictReceive();
       const dest = formatMuxed(p.destination());
       isMuxedDestination = dest.isMuxed;
       details["Destination"] = dest.address;
@@ -53,7 +57,7 @@ function decodeSingleOp(op: xdr.Operation, index: number): DecodedOperation {
       break;
     }
     case "pathPaymentStrictSend": {
-      const p = body.pathPaymentStrictSend();
+      const p = value.pathPaymentStrictSend();
       const dest = formatMuxed(p.destination());
       isMuxedDestination = dest.isMuxed;
       details["Destination"] = dest.address;
@@ -62,13 +66,13 @@ function decodeSingleOp(op: xdr.Operation, index: number): DecodedOperation {
       break;
     }
     case "createAccount": {
-      const c = body.createAccount();
+      const c = value.createAccount();
       details["Destination"] = StrKey.encodeEd25519PublicKey(c.destination());
       details["StartingBalance"] = c.startingBalance().toString();
       break;
     }
     case "manageSellOffer": {
-      const o = body.manageSellOffer();
+      const o = value.manageSellOffer();
       const amount = o.amount().toString();
       if (amount === "0") {
         isCancelOffer = true;
@@ -80,7 +84,7 @@ function decodeSingleOp(op: xdr.Operation, index: number): DecodedOperation {
       break;
     }
     case "manageBuyOffer": {
-      const o = body.manageBuyOffer();
+      const o = value.manageBuyOffer();
       const amount = o.buyAmount().toString();
       if (amount === "0") {
         isCancelOffer = true;
@@ -92,13 +96,13 @@ function decodeSingleOp(op: xdr.Operation, index: number): DecodedOperation {
       break;
     }
     case "createPassiveSellOffer": {
-      const o = body.createPassiveSellOffer();
+      const o = value.createPassiveSellOffer();
       details["Amount"] = o.amount().toString();
       details["Price"] = `${o.price().n()}/${o.price().d()}`;
       break;
     }
     case "changeTrust": {
-      const c = body.changeTrust();
+      const c = value.changeTrust();
       details["Limit"] = c.limit().toString();
       details["Asset"] = c.line().switch().name;
       break;
@@ -106,7 +110,7 @@ function decodeSingleOp(op: xdr.Operation, index: number): DecodedOperation {
     case "beginSponsoringFutureReserves": {
       isSponsorship = true;
       labels.push("Sponsorship");
-      const b = body.beginSponsoringFutureReserves();
+      const b = value.beginSponsoringFutureReserves();
       details["SponsoredID"] = StrKey.encodeEd25519PublicKey(b.sponsoredId());
       break;
     }
@@ -159,7 +163,7 @@ export function decodeEnvelope(
     let sourceAccount = "";
     let sequence = "0";
     let fee = "0";
-    let memo = { type: "none", value: null as string | null };
+    const memo = { type: "none", value: null as string | null };
     let operationsRaw: xdr.Operation[] = [];
     let signatureCount = 0;
     const preconditions = {
