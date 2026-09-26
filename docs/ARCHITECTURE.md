@@ -15,6 +15,10 @@ scripts/     registry generation, scaffolding, contract verification
 | Module | Responsibility |
 | --- | --- |
 | `core/result` | `Result<T, Code>` — the shared success/failure shape |
+| `core/telemetry` | Structured, redacted logs for every critical path |
+| `core/workers` | Background worker framework: delayed, retryable, dead-lettered jobs |
+| `core/export` | Privacy-safe, scoped, schema-versioned data exports |
+| `core/contract` | API contract schemas and drift detection |
 | `core/network` | Network selection, URLs, passphrases, `NetworkProvider` |
 | `core/horizon` | Memoised Horizon client and the shared error taxonomy |
 | `core/rpc` | Minimal Soroban JSON-RPC caller |
@@ -35,14 +39,14 @@ specification is in [FEATURE_CONTRACT.md](./FEATURE_CONTRACT.md).
 
 ## The generated registry
 
-`scripts/generate-registry.mjs` scans `features/*/manifest.ts` and writes three
-files into `core/registry/`:
+`scripts/generate-registry.mjs` scans `features/*/manifest.ts` and writes the
+manifest list plus lazy loaders into `core/registry/`:
 
-| File | Used by |
-| --- | --- |
-| `manifests.generated.ts` | Navigation, dashboard, search, `generateStaticParams` |
-| `panels.generated.ts` | The `/tools/[slug]` route, via `next/dynamic` |
-| `registry.generated.ts` | Direct entry lookup |
+| File                     | Used by                                                               |
+| ------------------------ | --------------------------------------------------------------------- |
+| `manifests.generated.ts` | Navigation, dashboard, search, `generateStaticParams`                 |
+| `registry.generated.ts`  | Direct entry lookup with `load: () => import("@/features/.../panel")` |
+| `panels.generated.ts`    | Optional lazy map kept for analysis/debugging only                    |
 
 All three are **gitignored** and regenerated automatically on `predev`,
 `prebuild`, `pretest`, `prelint` and `postinstall`.
@@ -54,8 +58,11 @@ than committed:
 - dozens of feature branches can be open without conflicting,
 - and navigation, routing and search stay in sync automatically.
 
-Splitting manifests from panels also means listing 40 tools never pulls 40 tool
-implementations into the bundle — a tool page loads only its own panel.
+The registry keeps a metadata-only manifest and a lazy implementation loader. A
+feature's metadata is eagerly imported so nav/search can render instantly, while
+its panel implementation is only fetched when the tool route is visited. The
+shared bundle budget is therefore: zero eager feature-panel imports and zero
+module-side costs from individual slice implementations in the landing page.
 
 ## Routing
 
@@ -100,13 +107,26 @@ module would test the mock instead of the code.
 ## Quality gates
 
 ```bash
-npm run check    # registry → lint → test → verify:features → build
+npm run check    # registry → lint → test → verify:features → verify:issues → verify:fixtures → build
 ```
 
 CI runs the same steps on every pull request, including
 `npm run verify:features`, which fails a slice that does not meet the contract,
-and `npm run verify:issues`, which preserves a backlog of at least 40
-independent specifications with a stable 20-issue advanced wave.
+`npm run verify:issues`, which preserves a backlog of at least 40
+independent specifications with a stable 20-issue advanced wave, and
+`npm run verify:fixtures`, which imports every `features/*/fixtures/*.fixture.ts`
+file and fails with the specific file if a `@stellar/stellar-sdk` upgrade
+broke it.
+
+### SDK upgrades
+
+Fixtures are decentralized — one `fixtures/` directory per slice, owned by
+that slice's contributor — so there is no single place to eyeball after
+bumping `@stellar/stellar-sdk`. Most fixtures build their values with real SDK
+calls (`Keypair`, `TransactionBuilder`, `xdr.*`) rather than hand-typing them,
+so a renamed export or changed constructor throws the moment the fixture
+module loads. Run `npm run verify:fixtures` as part of every SDK-upgrade PR —
+it reports exactly which fixture file failed to import and why.
 
 See [ISSUE_PUBLISHING.md](./ISSUE_PUBLISHING.md) for the five-at-a-time
 GrantFox publication flow.

@@ -30,6 +30,9 @@ jobs:
       - name: Verify the feature contract
         run: npm run verify:features
 
+      - name: Enforce feature-slice import boundaries
+        run: npm run verify:boundaries
+
       - name: Verify the independent issue backlog
         run: npm run verify:issues
 
@@ -52,6 +55,15 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Check bundle budgets
+        run: node scripts/bundle-budget.mjs
+
+      - name: Validate disaster recovery
+        run: npm run recovery:validate
+
+      - name: Check operational health
+        run: npm run health:check
 
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium

@@ -1,5 +1,6 @@
 import { err, ok, type Result } from "@/core/result/result";
 import { FRIENDBOT_URL } from "@/core/network/config";
+import { isFeatureEnabled } from "@/core/feature-flags/flags";
 import { runHorizonRequest } from "@/core/horizon/request";
 import { toFaucetErrorCode } from "@/features/testnet-faucet/lib/friendbot.errors";
 import type {
@@ -97,6 +98,8 @@ export async function classifyFriendbotResponse(response: Response): Promise<Fau
   if (TIMEOUT_STATUSES.has(response.status)) return "timeout";
   if (response.status >= 500) return "friendbot_unavailable";
   if (response.status !== 400) return "request_failed";
+
+  if (!isFeatureEnabled("detailedFriendbotClassification")) return "request_failed";
 
   let problem: FriendbotProblem;
   try {

@@ -13,24 +13,28 @@ or submits a transaction.
 The app is a small stable **core** plus any number of independent **feature
 slices**. Each tool is one directory under `features/` that owns its logic,
 validation, state, UI, tests, fixtures, request mocks and documentation. The
-tool registry is *generated* from those directories, so adding a tool requires
+tool registry is _generated_ from those directories, so adding a tool requires
 creating one new directory and editing nothing else — which is what lets many
 contributors work in parallel without ever conflicting.
 
 See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) and
 [docs/FEATURE_CONTRACT.md](./docs/FEATURE_CONTRACT.md).
 
+Infrastructure docs: [Telemetry](./docs/TELEMETRY.md) ·
+[Workers](./docs/WORKERS.md) · [Exports](./docs/EXPORTS.md) ·
+[API Contract](./docs/API_CONTRACT.md).
+
 ## Tools
 
-| Tool | What it does |
-| --- | --- |
-| Address Validator | Validates Stellar addresses and explains exactly why one is rejected |
-| Balance Viewer | Every balance an account holds, including pool shares |
-| Trustline Checker | Whether an account trusts a specific asset from a specific issuer |
-| Payment QR Generator | Builds a SEP-0007 request and renders it as a QR code |
-| Transaction Lookup | Ledger, fee, memo, result and operations for a transaction hash |
-| Freighter Connect | Detects the wallet and warns about a network mismatch |
-| Testnet Faucet | Funds a testnet account through Friendbot |
+| Tool                 | What it does                                                         |
+| -------------------- | -------------------------------------------------------------------- |
+| Address Validator    | Validates Stellar addresses and explains exactly why one is rejected |
+| Balance Viewer       | Every balance an account holds, including pool shares                |
+| Trustline Checker    | Whether an account trusts a specific asset from a specific issuer    |
+| Payment QR Generator | Builds a SEP-0007 request and renders it as a QR code                |
+| Transaction Lookup   | Ledger, fee, memo, result and operations for a transaction hash      |
+| Freighter Connect    | Detects the wallet and warns about a network mismatch                |
+| Testnet Faucet       | Funds a testnet account through Friendbot                            |
 
 ## Tech stack
 
@@ -66,13 +70,34 @@ npm run registry             # regenerate the feature registry
 npm run new:feature          # scaffold a complete feature slice
 npm run verify:features      # check every slice against the feature contract
 npm run verify:issues        # check 40+ independent issues and the advanced wave
+npm run verify:telemetry     # verify >= 5 operations are instrumented
+npm run verify:contract      # run the API contract drift tests
+npm run test:workers         # run the background worker suite
 npm run issues               # preview the next five GrantFox issue payloads
 npm run test                 # unit, hook, component and accessibility tests
+npm run test:e2e              # full Playwright suite
+npm run test:e2e:critical     # deterministic account-history journey
 npm run test:coverage        # unit tests with a coverage summary
 npm run lint
 npm run build
 npm run check                # everything CI runs
+npm run bundle:check         # check per-feature bundle size budgets
+npm run recovery:validate    # validate data integrity after restore
+npm run health:check         # operational health dashboard
 ```
+
+The critical journey is the public account-history flow: enter an address,
+load operation history, follow its cursor, and recover from a transient
+request failure. Its Playwright tests use fixed SDK-derived fixtures and route
+all Horizon calls locally; `npm run test:e2e:critical` is the reproducible
+local command.
+
+For the account-history accessibility pass, manually verify keyboard-only
+entry and submission, visible focus after an invalid address, announced
+validation and request errors, filter and pager updates, notification
+open/close/read states, and 200% zoom without clipped controls. Run the
+component axe suite with `npm test` and record a browser and screen-reader
+version in the issue before submitting.
 
 ## Contributing
 
@@ -91,6 +116,15 @@ Maintainers publish contributor work in independent batches of five using the
 `coverage/coverage.txt` and machine-readable totals to
 `coverage/coverage-summary.json`. Coverage is informational and does not
 enforce a global percentage threshold.
+
+## Operations and Maintenance
+
+See documentation for operational workflows:
+
+- [RBAC.md](./docs/RBAC.md) - Role-based access control system
+- [DISASTER_RECOVERY.md](./docs/DISASTER_RECOVERY.md) - Data validation after restore
+- [OPERATIONAL_HEALTH.md](./docs/OPERATIONAL_HEALTH.md) - Health monitoring dashboard
+- [BUNDLE_BUDGET.md](./docs/BUNDLE_BUDGET.md) - Per-feature bundle size enforcement
 
 ## Security
 

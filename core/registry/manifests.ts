@@ -1,4 +1,8 @@
-import { generatedManifests } from "@/core/registry/manifests.generated";
+import {
+  generatedManifests,
+  generatedRegistrySchemaVersion
+} from "@/core/registry/manifests.generated";
+import { assertFeatureRegistryVersion } from "@/core/registry/schema";
 import {
   FEATURE_CATEGORIES,
   type FeatureCategory,
@@ -11,6 +15,8 @@ import {
  * Navigation, the dashboard and search import from here so that listing tools
  * never pulls a single feature panel into the bundle.
  */
+assertFeatureRegistryVersion(generatedRegistrySchemaVersion, "navigation/search manifests");
+
 export const manifests: readonly FeatureManifest[] = [...generatedManifests].sort((a, b) =>
   a.title.localeCompare(b.title)
 );

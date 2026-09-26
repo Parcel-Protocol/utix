@@ -39,7 +39,6 @@ export const copy = {
   txBadSeqDescription: "A normal transaction must use the account’s next valid sequence shown above. A stale, skipped, or already-consumed value can be rejected as tx_bad_seq.",
   exhaustedDescription: "This account is already at the signed int64 maximum, so it cannot be the source of another classic transaction.",
   sequenceStaleAdvisory: "Sequence number is current as of the ledger shown above, but it can change if the account submits another transaction. Re-check before using this value to build a real transaction.",
-  refresh: "Refresh",
   reset: "Inspect another account"
 } as const;
 

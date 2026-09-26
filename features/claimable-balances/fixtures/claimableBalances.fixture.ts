@@ -83,11 +83,23 @@ export const claimableBalancesFixture: ClaimableBalancesResult = {
       claimants: [
         {
           destination: claimantAccount,
+          predicate: { unconditional: true },
           predicateText: "can be claimed at any time",
           claimableNow: true
         },
         {
           destination: otherClaimant,
+          predicate: {
+            and: [
+              { not: { abs_before: "2027-01-01T00:00:00Z" } },
+              {
+                or: [
+                  { rel_before: "86400" },
+                  { abs_after: "2026-01-01T00:00:00Z" }
+                ]
+              }
+            ]
+          },
           predicateText:
             "not (before Jan 1, 2027, 12:00:00 AM UTC) and within 1 day after the balance was created or from Jan 1, 2026, 12:00:00 AM UTC onward",
           claimableNow: true

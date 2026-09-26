@@ -268,7 +268,13 @@ export function extractOperationParams(record: Record<string, unknown>): Operati
 }
 
 export function flattenLoadedOperations(pages: OperationSummary[][]): OperationSummary[] {
-  return pages.flat();
+  const seen = new Set<string>();
+  return pages.flat().filter((operation) => {
+    const key = [operation.id, operation.pagingToken, operation.transactionHash, operation.type].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function filterOperations(

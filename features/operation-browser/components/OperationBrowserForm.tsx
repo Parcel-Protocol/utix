@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/core/ui/Button";
 import { Field } from "@/core/ui/Field";
 import { Input } from "@/core/ui/Input";
@@ -19,6 +19,16 @@ export function OperationBrowserForm({
   errorMessage?: string | null;
 }) {
   const [accountId, setAccountId] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const queryAccount = new URLSearchParams(window.location.search).get("account");
+    if (queryAccount) queueMicrotask(() => setAccountId(queryAccount));
+  }, []);
+
+  useEffect(() => {
+    if (errorField) inputRef.current?.focus();
+  }, [errorField]);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -26,14 +36,16 @@ export function OperationBrowserForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} aria-busy={pending} noValidate className="space-y-4">
       <Field
         label={copy.formLabel}
         hint={copy.formHint}
         error={errorField === "accountId" ? errorMessage : null}
+        required
       >
         {({ inputId, describedBy, invalid }) => (
           <Input
+            ref={inputRef}
             id={inputId}
             aria-describedby={describedBy}
             aria-invalid={invalid}
@@ -41,6 +53,7 @@ export function OperationBrowserForm({
             onChange={(event) => setAccountId(event.target.value)}
             autoComplete="off"
             spellCheck={false}
+            required
           />
         )}
       </Field>

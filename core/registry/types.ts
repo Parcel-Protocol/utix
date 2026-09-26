@@ -60,9 +60,11 @@ export interface FeatureManifest {
   keywords: readonly string[];
   /** True when the tool performs no network requests at all. */
   offline?: boolean;
+  /** Explicit opt-out for tools whose purpose is to query multiple networks independently. */
+  networkEpochIndependent?: boolean;
 }
 
 export interface FeatureEntry {
   manifest: FeatureManifest;
-  Panel: ComponentType;
+  load: () => Promise<ComponentType>;
 }

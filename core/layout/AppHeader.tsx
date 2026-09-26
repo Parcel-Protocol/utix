@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Github, Menu, Network, X } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/core/ui/Badge";
+import { NotificationCenter } from "@/core/notifications/NotificationCenter";
 import { useNetwork } from "@/core/network/NetworkProvider";
 import { isStellarNetwork } from "@/core/network/types";
 import { SidebarNav } from "@/core/layout/Sidebar";
@@ -49,6 +50,7 @@ export function AppHeader() {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3">
+          <NotificationCenter />
           <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[#7dbcd2]/45 bg-white/75 px-3 text-sm font-semibold text-[#29364d] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
             <Network className="h-4 w-4 text-[#178fb5]" aria-hidden />
             <span className="sr-only sm:not-sr-only">Network</span>

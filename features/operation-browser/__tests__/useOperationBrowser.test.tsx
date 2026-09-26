@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { NetworkProvider } from "@/core/network/NetworkProvider";
+import { NotificationProvider } from "@/core/notifications/NotificationProvider";
 import { withMswHandlers } from "@/core/testing/msw";
 import { resetHorizonClients } from "@/core/horizon/client";
 import { useOperationBrowser } from "@/features/operation-browser/hooks/useOperationBrowser";
@@ -13,7 +14,11 @@ import {
 withMswHandlers(...handlers);
 
 function wrapper({ children }: { children: React.ReactNode }) {
-  return <NetworkProvider initialNetwork="testnet">{children}</NetworkProvider>;
+  return (
+    <NotificationProvider>
+      <NetworkProvider initialNetwork="testnet">{children}</NetworkProvider>
+    </NotificationProvider>
+  );
 }
 
 describe("useOperationBrowser", () => {

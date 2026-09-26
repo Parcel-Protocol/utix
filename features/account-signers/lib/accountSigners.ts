@@ -34,7 +34,6 @@ export function normalizeSigner(signer: HorizonSigner, accountId: string): Accou
   };
 }
 
-/** Adds integer signer weights without floating-point conversion. */
 export function totalSignerWeight(signers: Pick<AccountSigner, "weight">[]): string {
   return signers.reduce((total, signer) => total + BigInt(signer.weight), 0n).toString();
 }
@@ -66,6 +65,19 @@ export function assessThresholds(
   }));
 }
 
+export function canSatisfy(
+  signers: AccountSigner[],
+  selectedKeys: string[],
+  level: ThresholdLevel,
+  thresholds: AccountThresholds
+): boolean {
+  const selectedSet = new Set(selectedKeys);
+  const selectedWeight = signers
+    .filter((s) => selectedSet.has(s.key))
+    .reduce((sum, s) => sum + BigInt(s.weight), 0n);
+  return selectedWeight >= BigInt(thresholds[level]);
+}
+
 export function isNormalSingleSignerAccount(
   signers: AccountSigner[],
   thresholds: AccountThresholds
@@ -91,6 +103,7 @@ export async function loadAccountSigners(
     );
     const thresholds = normalizeThresholds(account.thresholds);
     const totalWeight = totalSignerWeight(signers);
+    const isLockedOut = BigInt(totalWeight) < BigInt(thresholds.high);
 
     return ok({
       accountId: account.accountId(),
@@ -100,7 +113,8 @@ export async function loadAccountSigners(
       totalWeight,
       isNormalSingleSigner: isNormalSingleSignerAccount(signers, thresholds),
       isMultisig: signers.length > 1,
-      masterKeyDisabled: signers.some((signer) => signer.isMaster && signer.weight === "0")
+      masterKeyDisabled: signers.some((signer) => signer.isMaster && signer.weight === "0"),
+      isLockedOut
     });
   } catch (error) {
     return err(toAccountSignersErrorCode(error));

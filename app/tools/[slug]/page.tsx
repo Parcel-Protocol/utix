@@ -40,7 +40,8 @@ export default async function ToolPage({ params }: RouteParams) {
 
   if (!feature) notFound();
 
-  const { manifest, Panel } = feature;
+  const { manifest, load } = feature;
+  const Panel = await load();
 
   return (
     <FeatureShell manifest={manifest}>

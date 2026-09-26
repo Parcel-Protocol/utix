@@ -27,6 +27,17 @@ else**:
   do not edit a registry, a navigation list, or a constants file.
 - Navigation, the dashboard and search all read that generated registry, so a
   new tool appears in all three the moment its directory exists.
+- The registry is split into metadata and lazy loaders: `manifest` is eager, but
+  each entry exposes `load: () => import("@/features/<slug>/panel")`. That
+  keeps the shared nav/search bundle metadata-only and avoids pulling every
+  feature panel into the initial JavaScript.
+
+The structural validator in `scripts/generate-registry.mjs` enforces the
+registry budget automatically: every feature must keep its metadata in
+`manifest.ts`, its panel in `panel.tsx`, and it may not import another feature's
+internal modules. A directory is rejected with a file-and-slice-specific error if
+its slug duplicates another tool, its manifest omits required fields, or it
+crosses feature boundaries.
 
 Two contributors working on two different tools cannot conflict, because they
 never touch the same file.
@@ -153,7 +164,8 @@ not also render a banner for it — see `TrustlineCheckerPanel`.
 Hand-written Stellar addresses have wrong checksums. Derive them:
 
 ```ts
-const seed = (byte: number) => Keypair.fromRawEd25519Seed(Buffer.alloc(32, byte));
+const seed = (byte: number) =>
+  Keypair.fromRawEd25519Seed(Buffer.alloc(32, byte));
 export const accountId = seed(1).publicKey();
 ```
 
@@ -181,10 +193,10 @@ import { renderFeatureSlice } from "@/core/testing/contract";
 
 const slice = renderFeatureSlice("balance-viewer", <BalanceViewerPanel />);
 
-slice.expectEmptyState();                          // idle, before any input
+slice.expectEmptyState(); // idle, before any input
 await user.click(screen.getByRole("button", { name: copy.submit }));
-await slice.waitForState("loading");               // request in flight
-await slice.waitForState("error");                 // request failed
+await slice.waitForState("loading"); // request in flight
+await slice.waitForState("error"); // request failed
 ```
 
 The harness asserts against the `data-contract-state` attribute that the shared
@@ -209,6 +221,37 @@ against the deliberately minimal `good` and `bad` fixture slices under
 (or always fail) fails the normal test run.
 
 ---
+
+### 12. Feature imports stop at slice boundaries
+
+A feature may import its own files, `core/`, and external packages. It must not
+import another feature, including through a deep relative path. Move genuinely
+shared code into `core/`. `npm run verify:boundaries` enforces this in CI and
+has both alias and relative-path failure fixtures. An exception requires a
+documented architectural reason and maintainer approval in
+`scripts/feature-boundary-exceptions.json`; inline suppressions are
+intentionally unsupported. The checked-in entries are legacy migration debt,
+not examples to copy.
+
+### 13. Network switches are atomic
+
+`NetworkContext` exposes a monotonically increasing `epoch`. The provider keys
+its feature boundary by `{network}:{epoch}`, so switching networks immediately
+unmounts every result and in-flight state. Async callbacks from the previous
+epoch therefore cannot overwrite the new network's UI. Network-aware hooks
+must use `useNetwork`; do not create a separate network preference or cache.
+Tools that deliberately query multiple networks independently must declare
+`networkEpochIndependent: true` in their manifest so the verifier can
+distinguish that design from an accidental context bypass.
+
+### 14. Generated registry output is versioned
+
+Every generated registry module exports `generatedRegistrySchemaVersion`.
+Navigation, search, panel lookup, and `verify:features` assert that it matches
+`FEATURE_REGISTRY_SCHEMA_VERSION`. To change the format: update the generator,
+consumers, schema constant, and old-schema regression test in one pull request;
+then run `npm run registry`. Treat each increment as a small registry-format
+changelog in the pull request description.
 
 ## What "done" means
 
