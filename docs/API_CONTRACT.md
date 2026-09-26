@@ -15,6 +15,7 @@ Locked operations (see `core/contract/__tests__/contract.test.ts`):
 | `worker.job`        | Job payload from `core/workers`                             |
 | `export.envelope`   | Export artifact from `core/export`                          |
 | `feature.manifest`  | Registry metadata every feature publishes                   |
+| `lifecycle.state`   | Derived state view shared by the UI and API responses        |
 
 ## Conventions
 
@@ -91,6 +92,30 @@ What `manifest.ts` publishes for every tool:
 ```json
 {"slug":"payment-qr","title":"Payment QR Generator","description":"Build a SEP-0007 payment request URI and render it as a scannable QR code.","category":"payments","status":"working"}
 ```
+
+## 6. Record state view — `lifecycle.state`
+
+`stateView(kind, state)` from `core/lifecycle/records.ts`. The UI and an API
+consumer receive the *same* object: the label, the tone and the legal events all
+come from the lifecycle table, so a badge can never disagree with a payload.
+
+```json
+{"kind":"worker_job","state":"retrying","label":"Retrying","tone":"warning","terminal":false,"allowedEvents":["start","fail","exhaust","retry","dead_letter"]}
+```
+
+```json
+{"kind":"notification","state":"purged","label":"Purged","tone":"danger","terminal":true,"allowedEvents":[]}
+```
+
+A rejected transition is a `Result`, not an exception:
+
+```json
+{"ok":false,"code":"terminal_state"}
+```
+
+Codes: `unknown_record_kind`, `unknown_state`, `unknown_event`,
+`invalid_transition`, `terminal_state`. See
+[LIFECYCLE.md](./LIFECYCLE.md).
 
 ## Drift detection
 

@@ -16,6 +16,7 @@ import {
   type ExportRecordSource
 } from "@/core/export/exporter";
 import type { FeatureManifest } from "@/core/registry/types";
+import { stateView, workerJobMachine } from "@/core/lifecycle/records";
 import { manifest as paymentQrManifest } from "@/features/payment-qr/manifest";
 import {
   assertContract,
@@ -72,6 +73,18 @@ const exportEnvelopeContract = contractOperation("export.envelope", {
     recordCount: { type: "number", required: true },
     totalRecords: { type: "number", required: true },
     records: { type: "array", required: true }
+  }
+});
+
+const lifecycleStateContract = contractOperation("lifecycle.state", {
+  version: V,
+  fields: {
+    kind: { type: "string", required: true },
+    state: { type: "string", required: true },
+    label: { type: "string", required: true },
+    tone: { type: "string", required: true },
+    terminal: { type: "boolean", required: true },
+    allowedEvents: { type: "array", required: true }
   }
 });
 
@@ -135,6 +148,17 @@ describe("contract drift tests", () => {
   it("locks the feature manifest shape", () => {
     const manifest: FeatureManifest = paymentQrManifest;
     expect(assertContract(featureManifestContract, () => manifest).ok).toBe(true);
+  });
+
+  it("locks the lifecycle state view the UI and the API both render", () => {
+    // The same object a component would use for a badge.
+    expect(assertContract(lifecycleStateContract, () => stateView("worker_job", "retrying")).ok).toBe(
+      true
+    );
+    // And it is derived from the table, not from a hand-written label map.
+    const terminal = stateView("worker_job", "succeeded");
+    expect(terminal.terminal).toBe(workerJobMachine.isTerminal("succeeded"));
+    expect(terminal.allowedEvents).toEqual(workerJobMachine.allowedEvents("succeeded"));
   });
 
   it("detects a drifted response that drops a required field", () => {

@@ -1,9 +1,11 @@
+import { notificationMachine, transitionRecord } from "@/core/lifecycle/records";
 import {
   NOTIFICATION_EVENTS,
   type Notification,
   type NotificationEventType,
   type NotificationInput,
   type NotificationRecipient,
+  type NotificationState,
   type NotificationStorage,
   type NotificationTone
 } from "@/core/notifications/types";
@@ -69,26 +71,57 @@ function stableId(value: string): string {
   return `notification-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-function isNotification(value: unknown): value is Notification {
-  if (!value || typeof value !== "object") return false;
+function isNotificationState(value: unknown): value is NotificationState {
+  return notificationMachine.isState(value) && value !== "purged";
+}
+
+/**
+ * Accepts a stored entry and normalises it to the lifecycle model. Entries
+ * written before the state field existed are migrated from their `read` flag,
+ * so an existing browser profile keeps working.
+ */
+function parseNotification(value: unknown): Notification | null {
+  if (!value || typeof value !== "object") return null;
   const item = value as Partial<Notification>;
-  return (
-    typeof item.id === "string" &&
-    typeof item.recipient === "string" &&
-    isNotificationRecipient(item.recipient) &&
-    isNotificationEvent(item.event) &&
-    isNotificationTone(item.tone) &&
-    typeof item.title === "string" &&
-    typeof item.message === "string" &&
-    typeof item.href === "string" &&
-    !containsSecret(item.title) &&
-    !containsSecret(item.message) &&
-    !containsSecret(item.href) &&
-    isSafeHref(item.href) &&
-    typeof item.dedupeKey === "string" &&
-    typeof item.createdAt === "string" &&
-    typeof item.read === "boolean"
-  );
+  if (
+    typeof item.id !== "string" ||
+    typeof item.recipient !== "string" ||
+    !isNotificationRecipient(item.recipient) ||
+    !isNotificationEvent(item.event) ||
+    !isNotificationTone(item.tone) ||
+    typeof item.title !== "string" ||
+    typeof item.message !== "string" ||
+    typeof item.href !== "string" ||
+    containsSecret(item.title) ||
+    containsSecret(item.message) ||
+    containsSecret(item.href) ||
+    !isSafeHref(item.href) ||
+    typeof item.dedupeKey !== "string" ||
+    typeof item.createdAt !== "string"
+  ) {
+    return null;
+  }
+
+  const state = isNotificationState(item.state)
+    ? item.state
+    : item.read === true
+      ? "read"
+      : notificationMachine.initial();
+
+  return {
+    id: item.id,
+    recipient: item.recipient,
+    event: item.event,
+    tone: item.tone,
+    title: item.title,
+    message: item.message,
+    href: item.href,
+    dedupeKey: item.dedupeKey,
+    createdAt: item.createdAt,
+    state,
+    // Derived once, from the single source of truth.
+    read: state === "read" || state === "archived"
+  };
 }
 
 export class NotificationStore {
@@ -110,7 +143,10 @@ export class NotificationStore {
     try {
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
-      return parsed.filter(isNotification).filter((item) => item.recipient === recipient);
+      return parsed
+        .map(parseNotification)
+        .filter((item): item is Notification => item !== null)
+        .filter((item) => item.recipient === recipient);
     } catch {
       return [];
     }
@@ -126,7 +162,8 @@ export class NotificationStore {
   }
 
   unreadCount(recipient: NotificationRecipient): number {
-    return this.list(recipient).filter((notification) => !notification.read).length;
+    // Derived from the lifecycle state, not from a second boolean.
+    return this.list(recipient).filter((notification) => notification.state === "unread").length;
   }
 
   publish(input: NotificationInput): Notification | null {
@@ -164,6 +201,7 @@ export class NotificationStore {
       href,
       dedupeKey,
       createdAt,
+      state: notificationMachine.initial(),
       read: false
     };
 
@@ -171,25 +209,47 @@ export class NotificationStore {
     return notification;
   }
 
+  /**
+   * Moves a notification to `read`. Returns `null` when the record is unknown
+   * *or* when the lifecycle table refuses the move (an already-read or archived
+   * notification), so a double click cannot re-fire the write.
+   */
   markRead(recipient: NotificationRecipient, id: string): Notification | null {
     if (!isNotificationRecipient(recipient)) return null;
     const notifications = this.read(recipient);
     const index = notifications.findIndex((notification) => notification.id === id);
     if (index < 0) return null;
-    const notification = { ...notifications[index], read: true };
+    const current = notifications[index];
+    const moved = transitionRecord("notification", current.id, current.state, "read", {
+      actor: `account:${recipient.startsWith("account:") ? recipient.slice(8) : "workspace"}`
+    });
+    if (!moved.ok) return null;
+    const notification: Notification = { ...current, state: "read", read: true };
     notifications[index] = notification;
     this.write(recipient, notifications);
     return notification;
   }
 
+  /** Applies `read` to every entry that still allows it; already-read stay put. */
   markAllRead(recipient: NotificationRecipient): Notification[] {
     if (!isNotificationRecipient(recipient)) return [];
-    const notifications = this.read(recipient).map((notification) => ({ ...notification, read: true }));
+    const notifications = this.read(recipient).map((notification) => {
+      if (!notificationMachine.canTransition(notification.state, "read").ok) return notification;
+      transitionRecord("notification", notification.id, notification.state, "read");
+      return { ...notification, state: "read", read: true };
+    });
     this.write(recipient, notifications);
     return notifications;
   }
 
+  /** Removes every record for a recipient. Purging is terminal and one-way. */
   clear(recipient: NotificationRecipient): void {
-    if (isNotificationRecipient(recipient)) this.storage.removeItem(this.key(recipient));
+    if (!isNotificationRecipient(recipient)) return;
+    for (const notification of this.read(recipient)) {
+      transitionRecord("notification", notification.id, notification.state, "purge", {
+        reason: "recipient_cleared"
+      });
+    }
+    this.storage.removeItem(this.key(recipient));
   }
 }

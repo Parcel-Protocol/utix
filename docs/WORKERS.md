@@ -13,16 +13,21 @@ delayed and retryable jobs, produced by `createWorkerFramework()`.
   preserved; jobs never silently disappear.
 - **Idempotent reprocessing** — `dedupeKey` makes re-enqueueing a pending job a
   no-op, and `processJob(id)` leaves a finished job untouched.
+- **Guarded transitions** — every status change goes through the `worker_job`
+  lifecycle table in `core/lifecycle/records.ts`. A move the table omits is
+  refused with a stable code (`terminal_state`, `invalid_transition`) instead of
+  silently writing a status; see [LIFECYCLE.md](./LIFECYCLE.md).
 
 ## Lifecycle
 
 ```
-enqueue ──► queued ──► running ──► succeeded
+enqueue ──► queued ──► running ──► succeeded          (terminal)
                 │          │
-                │(delay)   └─► retrying ──► running (again)
-                │              │
-                ▼              ▼(attempts exhausted)
-           dead_lettered ◄─────┘
+                │          └─► retrying ──► running (again)
+                │              │    │
+                │              │    └─retry─► queued
+                │              └─exhaust─┐
+                └───dead_letter───────────┴──► dead_lettered (terminal)
 ```
 
 ## Using it
@@ -48,6 +53,20 @@ workers.drainDueJobs();
 ```
 
 Inspect with `inspect()`, `getById(id)` and `retryJob(id)`.
+
+`retryJob(id)` and `deadLetter(id)` return a `Result`, not a bare payload,
+because a settled job cannot be moved:
+
+```ts
+const retried = workers.retryJob(job.id);
+if (!retried.ok && retried.code === "terminal_state") {
+  // `succeeded` / `dead_lettered` — the handler will not run again.
+}
+```
+
+`canTransition(status, event)` answers the same question without mutating
+anything, and `stateView("worker_job", job.status)` is what a UI badge or an API
+response should render.
 
 ## Moving one operation in already
 
