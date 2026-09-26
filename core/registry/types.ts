@@ -66,5 +66,5 @@ export interface FeatureManifest {
 
 export interface FeatureEntry {
   manifest: FeatureManifest;
-  Panel: ComponentType;
+  load: () => Promise<ComponentType>;
 }

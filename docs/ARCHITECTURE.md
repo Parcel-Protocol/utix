@@ -38,14 +38,14 @@ specification is in [FEATURE_CONTRACT.md](./FEATURE_CONTRACT.md).
 
 ## The generated registry
 
-`scripts/generate-registry.mjs` scans `features/*/manifest.ts` and writes three
-files into `core/registry/`:
+`scripts/generate-registry.mjs` scans `features/*/manifest.ts` and writes the
+manifest list plus lazy loaders into `core/registry/`:
 
-| File | Used by |
-| --- | --- |
-| `manifests.generated.ts` | Navigation, dashboard, search, `generateStaticParams` |
-| `panels.generated.ts` | The `/tools/[slug]` route, via `next/dynamic` |
-| `registry.generated.ts` | Direct entry lookup |
+| File                     | Used by                                                               |
+| ------------------------ | --------------------------------------------------------------------- |
+| `manifests.generated.ts` | Navigation, dashboard, search, `generateStaticParams`                 |
+| `registry.generated.ts`  | Direct entry lookup with `load: () => import("@/features/.../panel")` |
+| `panels.generated.ts`    | Optional lazy map kept for analysis/debugging only                    |
 
 All three are **gitignored** and regenerated automatically on `predev`,
 `prebuild`, `pretest`, `prelint` and `postinstall`.
@@ -57,8 +57,11 @@ than committed:
 - dozens of feature branches can be open without conflicting,
 - and navigation, routing and search stay in sync automatically.
 
-Splitting manifests from panels also means listing 40 tools never pulls 40 tool
-implementations into the bundle — a tool page loads only its own panel.
+The registry keeps a metadata-only manifest and a lazy implementation loader. A
+feature's metadata is eagerly imported so nav/search can render instantly, while
+its panel implementation is only fetched when the tool route is visited. The
+shared bundle budget is therefore: zero eager feature-panel imports and zero
+module-side costs from individual slice implementations in the landing page.
 
 ## Routing
 
