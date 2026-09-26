@@ -45,7 +45,9 @@ const boundaries = [
   { file: "core/notifications/store.ts", emitter: "notification.published" },
   { file: "core/notifications/store.ts", emitter: "notification.cleared" },
   { file: "core/reconciliation/job.ts", emitter: "reconciliation.reported" },
-  { file: "core/idempotency/idempotency.ts", emitter: "idempotency.claim_released" }
+  { file: "core/idempotency/idempotency.ts", emitter: "idempotency.claim_released" },
+  { file: "core/quota/quota.ts", emitter: "quota.override_granted" },
+  { file: "core/quota/quota.ts", emitter: "quota.override_revoked" }
 ];
 
 const sources = new Map();

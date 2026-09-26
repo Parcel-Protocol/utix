@@ -17,6 +17,12 @@ import {
   type IdempotencyErrorCode,
   type IdempotencyStore
 } from "@/core/idempotency/idempotency";
+import {
+  createMemoryQuotaStorage,
+  createQuotaStore,
+  type QuotaErrorCode,
+  type QuotaStore
+} from "@/core/quota/quota";
 import { err, ok, type Result } from "@/core/result/result";
 import { paginateByCursor } from "@/core/pagination/cursor";
 import {
@@ -31,7 +37,8 @@ export type ExportErrorCode =
   | "schema_unsupported"
   | "empty_source"
   | "unsupported_scope"
-  | IdempotencyErrorCode;
+  | IdempotencyErrorCode
+  | QuotaErrorCode;
 
 /** Increment on any breaking change to record shapes or the envelope. */
 export const EXPORT_CURRENT_SCHEMA_VERSION = "1.0";
@@ -80,6 +87,11 @@ export interface ExportRequest {
    * producing a second artifact (and a second notification).
    */
   idempotencyKey?: string;
+  /**
+   * Who the `export.generate` quota is charged to, e.g. `account:G…`. Without
+   * one, every anonymous caller of a scope shares a single allowance.
+   */
+  principal?: string;
 }
 
 export interface ExportEnvelope {
@@ -167,6 +179,22 @@ export function createExportIdempotencyStore(
 }
 
 /**
+ * The `export.generate` quota. Held behind a ref for the same reason as the
+ * idempotency store: a test installs an isolated one.
+ */
+const exportQuotaRef: { current: QuotaStore } = {
+  current: createQuotaStore({ storage: createMemoryQuotaStorage() })
+};
+
+/** Test seam: installs an isolated quota store and returns it. */
+export function createExportQuotaStore(
+  store: QuotaStore = createQuotaStore({ storage: createMemoryQuotaStorage() })
+): QuotaStore {
+  exportQuotaRef.current = store;
+  return store;
+}
+
+/**
  * Every export attempt is audited, including the ones that were refused: a
  * denied maintainer-scope request is exactly the event a reviewer looks for.
  * Only counts and version metadata are recorded, never the records themselves.
@@ -247,6 +275,21 @@ export function exportRecords(
         auditExport(request, "denied", { requestedSchema: request.schemaVersion }, "schema_unsupported");
         if (protectedRequest) exportIdempotencyRef.current.fail(protectedRequest, "schema_unsupported");
         return err("schema_unsupported");
+      }
+
+      // Charged after the cheap refusals and after a replay, so neither an
+      // invalid request nor a retried one spends the caller's allowance.
+      const charged = exportQuotaRef.current.consume({
+        operation: "export.generate",
+        principal: request.principal ?? (request.actor.kind === "maintainer" ? "maintainer" : `account:${request.scope}`),
+        correlationId: request.correlationId
+      });
+      if (!charged.ok) {
+        auditExport(request, "denied", { quota: "export.generate" }, charged.code);
+        // Released, not failed: a failed record would replay the refusal
+        // forever, but the same key should succeed once the window resets.
+        if (protectedRequest) exportIdempotencyRef.current.abandon(protectedRequest);
+        return charged;
       }
 
       const allowed = sources.filter(

@@ -24,6 +24,12 @@ import {
 } from "@/core/idempotency/idempotency";
 import { applyTransition, type LifecycleErrorCode } from "@/core/lifecycle/lifecycle";
 import { workerJobMachine } from "@/core/lifecycle/records";
+import {
+  createMemoryQuotaStorage,
+  createQuotaStore,
+  type QuotaErrorCode,
+  type QuotaStore
+} from "@/core/quota/quota";
 import { err, ok, type Result } from "@/core/result/result";
 import { emitTelemetry, newCorrelationId } from "@/core/telemetry/telemetry";
 
@@ -69,6 +75,11 @@ export interface JobInput {
    * `enqueue()` when a retry must not create a second job.
    */
   idempotencyKey?: string;
+  /**
+   * Who the `worker.enqueue` quota is charged to on `submit()`. Defaults to
+   * `system:worker`, a single allowance shared by every unattributed caller.
+   */
+  principal?: string;
 }
 
 export interface SubmitResult {
@@ -118,7 +129,9 @@ export interface WorkerFramework {
    * The high-risk write path: enqueues under an idempotency key so a retried
    * submission replays the original job instead of creating a duplicate.
    */
-  submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode>;
+  submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode | QuotaErrorCode>;
+  /** The quota store `submit()` charges. */
+  quota(): QuotaStore;
   /** The idempotency records this framework has persisted. */
   idempotency(): IdempotencyStore;
   /** Executes every due job once and returns the lifecycle summary. */
@@ -163,11 +176,20 @@ function findingDedupe(jobs: Map<string, JobPayload>, key: string): JobPayload |
   return undefined;
 }
 
-export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): WorkerFramework {
+export interface WorkerFrameworkOptions {
+  /** Quota store charged by `submit()`. Defaults to an isolated in-memory one. */
+  quota?: QuotaStore;
+}
+
+export function createWorkerFramework(
+  policy: Partial<RetryPolicy> = {},
+  options: WorkerFrameworkOptions = {}
+): WorkerFramework {
   const mergedPolicy: RetryPolicy = { ...DEFAULT_POLICY, ...policy };
   const registrations = new Map<string, { handler: JobHandler; retryDelayMs: number; maxAttempts: number }>();
   const jobs = new Map<string, JobPayload>();
   const idempotencyStore = createIdempotencyStore({ ttlMs: mergedPolicy.idempotencyTtlMs });
+  const quotaStore = options.quota ?? createQuotaStore({ storage: createMemoryQuotaStorage() });
 
   /**
    * The only place a job's status changes. Anything the `worker_job` table does
@@ -315,7 +337,7 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
       return job;
     },
 
-    submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode> {
+    submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode | QuotaErrorCode> {
       const begun = idempotencyStore.begin({
         key: input.idempotencyKey,
         operation: "worker.enqueue",
@@ -342,6 +364,19 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
         return ok({ job, replayed: true, record: recorded });
       }
 
+      // A replay above is free; only a submission that creates a job is charged.
+      const charged = quotaStore.consume({
+        operation: "worker.enqueue",
+        principal: input.principal ?? "system:worker",
+        actorType: "worker",
+        correlationId: input.correlationId
+      });
+      if (!charged.ok) {
+        // Released so the same key can succeed once the window resets.
+        idempotencyStore.abandon(input.idempotencyKey!);
+        return charged;
+      }
+
       const job = framework.enqueue(input);
       const completed = idempotencyStore.complete(input.idempotencyKey!, { jobId: job.id });
       if (!completed.ok) {
@@ -349,6 +384,10 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
         return completed;
       }
       return ok({ job, replayed: false, record: completed.value });
+    },
+
+    quota(): QuotaStore {
+      return quotaStore;
     },
 
     idempotency(): IdempotencyStore {
@@ -416,6 +455,8 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
       jobs.clear();
       registrations.clear();
       idempotencyStore.reset();
+      // A shared quota store belongs to the caller; only an owned one is cleared.
+      if (!options.quota) quotaStore.reset();
     }
   };
 

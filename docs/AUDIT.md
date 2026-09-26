@@ -46,6 +46,8 @@ cannot disagree about coverage:
 | `notification.cleared`      | `core/notifications/store.ts` (`clear`)       |
 | `reconciliation.reported`   | `core/reconciliation/job.ts`                  |
 | `idempotency.claim_released`| `core/idempotency/idempotency.ts` (`abandon`) |
+| `quota.override_granted`    | `core/quota/quota.ts` (`grantOverride`)       |
+| `quota.override_revoked`    | `core/quota/quota.ts` (`revokeOverride`)      |
 
 ### Which lifecycle moves are audited
 
