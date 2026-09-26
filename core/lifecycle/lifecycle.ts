@@ -23,6 +23,7 @@
  * knows about a particular record.
  */
 
+import { isAuditedLifecycleEvent, recordAudit } from "@/core/audit/audit";
 import { err, ok, type Result } from "@/core/result/result";
 import { emitTelemetry, newCorrelationId } from "@/core/telemetry/telemetry";
 
@@ -54,8 +55,19 @@ export interface LifecycleDefinition {
 export interface TransitionContext {
   /** ISO-8601 instant. Injected so a transition is reproducible in a test. */
   readonly at?: string;
-  /** Who or what asked for the transition, e.g. `worker` or `account:G…`. */
+  /**
+   * Who or what asked for the transition: `account:G…` for a user,
+   * `maintainer:…` for a maintainer, anything else for a system actor.
+   */
   readonly actor?: string;
+  /** Audit scope for the event this transition writes. Defaults to `own`. */
+  readonly scope?: "own" | "maintainer";
+  /**
+   * Forces an audit event even when the event and actor would not warrant one.
+   * The worker's manual entry points use it: `retryJob` and `deadLetter` are
+   * operator decisions, even though the worker performs them.
+   */
+  readonly audited?: boolean;
   /** Why the transition was requested. Never free-form user text. */
   readonly reason?: string;
   readonly correlationId?: string;
@@ -108,6 +120,14 @@ export interface LifecycleMachine {
 }
 
 const DEFAULT_ACTOR = "system";
+
+/** Maps the transition context's free-form actor onto an audit actor. */
+function actorOf(actor: string | undefined): { kind: "user" | "maintainer" | "system"; id: string } {
+  if (!actor || actor === DEFAULT_ACTOR) return { kind: "system", id: DEFAULT_ACTOR };
+  if (actor.startsWith("maintainer:")) return { kind: "maintainer", id: actor.slice("maintainer:".length) };
+  if (actor.startsWith("account:")) return { kind: "user", id: actor.slice(8) };
+  return { kind: "system", id: actor };
+}
 
 function validateDefinition(definition: LifecycleDefinition): void {
   const states = new Set(definition.states);
@@ -264,6 +284,20 @@ export function applyTransition(
   if (!parsed.ok) return parsed;
   const resolved = machine.resolve(parsed.value, event);
   if (!resolved.ok) {
+    // A refused move is sensitive: someone tried to do something the record may
+    // not do, and a reviewer needs to know who and what.
+    recordAudit({
+      action: "record.transition_denied",
+      actor: actorOf(options.actor),
+      scope: options.scope,
+      target: { kind: machine.definition.name, id: record.id },
+      reason: options.reason,
+      outcome: "denied",
+      after: { from: parsed.value, event },
+      at: options.at,
+      correlationId: options.correlationId,
+      errorCode: resolved.code
+    });
     emitTelemetry({
       op: "lifecycle.transition_rejected",
       actorType: "system",
@@ -290,6 +324,21 @@ export function applyTransition(
     reason: options.reason,
     correlationId: options.correlationId ?? newCorrelationId()
   };
+
+  const auditActor = actorOf(options.actor);
+  if (options.audited || isAuditedLifecycleEvent(event, auditActor.kind)) {
+    recordAudit({
+      action: "record.state_changed",
+      actor: auditActor,
+      scope: options.scope,
+      target: { kind: machine.definition.name, id: record.id },
+      reason: options.reason,
+      before: { state: transition.from },
+      after: { state: transition.to, event },
+      at: transition.at,
+      correlationId: transition.correlationId
+    });
+  }
 
   emitTelemetry({
     op: "lifecycle.transition",

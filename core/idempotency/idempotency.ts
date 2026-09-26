@@ -28,6 +28,7 @@
  * same sequence and get byte-identical records.
  */
 
+import { recordAudit } from "@/core/audit/audit";
 import { err, ok, type Result } from "@/core/result/result";
 import { emitTelemetry, newCorrelationId, redact } from "@/core/telemetry/telemetry";
 
@@ -370,6 +371,16 @@ export function createIdempotencyStore(options: IdempotencyOptions = {}): Idempo
       const existing = read(key);
       if (!existing) return err("idempotency_not_found");
       if (existing.status !== "in_flight") return err("idempotency_in_flight");
+      // Releasing a claim lets the same key run again, so it is auditable.
+      recordAudit({
+        action: "idempotency.claim_released",
+        actor: { kind: "system", id: existing.operation },
+        target: { kind: "idempotency_record", id: existing.key },
+        reason: "claim_abandoned",
+        before: { status: existing.status, operation: existing.operation },
+        at: existing.createdAt,
+        correlationId: existing.correlationId
+      });
       remove(key);
       return ok(true);
     },

@@ -9,6 +9,7 @@
  * exposed read-only — the job has no repair step, by design.
  */
 
+import { recordAudit } from "@/core/audit/audit";
 import { createLifecycle } from "@/core/lifecycle/lifecycle";
 import {
   emitReconciliationTelemetry,
@@ -73,6 +74,31 @@ export interface RunResult {
  * synchronously, which is what a CLI or a test wants. The job itself goes
  * through the worker framework so retries and telemetry stay in one place.
  */
+/**
+ * A report a maintainer will act on is an audited event. Counts only: the
+ * findings themselves stay in the report, not in the trail.
+ */
+function auditReport(report: ReconciliationReport): void {
+  recordAudit({
+    action: "reconciliation.reported",
+    actor: { kind: "maintainer", id: "reconciliation" },
+    scope: "maintainer",
+    target: { kind: "reconciliation_run", id: report.runId },
+    reason: "dry_run",
+    after: {
+      findings: report.summary.total,
+      inconsistent: report.summary.inconsistent,
+      stale: report.summary.stale,
+      duplicate: report.summary.duplicate,
+      missing: report.summary.missing,
+      invariants: report.checks.length,
+      clean: report.clean
+    },
+    at: report.finishedAt,
+    correlationId: report.runId
+  });
+}
+
 export function registerReconciliation(deps: RunDeps): () => Result<RunResult, ReconciliationErrorCode> {
   const { framework, providers } = deps;
   const last = deps.last ?? {};
@@ -97,6 +123,7 @@ export function registerReconciliation(deps: RunDeps): () => Result<RunResult, R
       const now = typeof at === "number" ? at : input.value.now;
       const report = reconcile({ ...input.value, now });
       last.report = report;
+      auditReport(report);
       emitReconciliationTelemetry(report);
     },
     { retryDelayMs: RECONCILIATION_DRY_RUN_DELAY_MS, maxAttempts: 2 }
@@ -109,6 +136,7 @@ export function registerReconciliation(deps: RunDeps): () => Result<RunResult, R
     const now = at ?? input.value.now;
     const report = reconcile({ ...input.value, now });
     last.report = report;
+    auditReport(report);
     emitReconciliationTelemetry(report);
     return ok({ report, summary: formatReport(report) });
   };

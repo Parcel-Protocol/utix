@@ -149,6 +149,27 @@ field that mutates anything.
 `kind` is one of `missing`, `duplicate`, `stale`, `inconsistent`. See
 [RECONCILIATION.md](./RECONCILIATION.md).
 
+## 9. Audit event — `audit.event`
+
+One event per sensitive action. `before`/`after` hold primitives only, so an
+event can never carry a payload.
+
+```json
+{"id":"4b16c3b6-85b7-4d43-8abb-79491d0fe612","action":"record.state_changed","actor":{"kind":"maintainer","id":"ada"},"actorId":"ada","scope":"maintainer","target":{"kind":"worker_job","id":"job-1"},"reason":"manual_dead_letter","outcome":"allowed","before":{"state":"retrying"},"after":{"state":"dead_lettered","event":"dead_letter"},"at":"2026-09-26T00:00:00.000Z","correlationId":"8f0c…06"}
+```
+
+`action` is one of `record.state_changed`, `record.transition_denied`,
+`export.generated`, `notification.published`, `notification.cleared`,
+`reconciliation.reported`, `idempotency.claim_released`. `outcome` is `allowed`
+or `denied`, in which case `errorCode` carries the refusal. Refused reads:
+
+```json
+{"ok":false,"code":"audit_denied"}
+```
+
+Codes: `audit_denied`, `invalid_audit_field`, `invalid_filter`,
+`audit_not_found`. See [AUDIT.md](./AUDIT.md).
+
 ## Drift detection
 
 `npm run test` (or `npm run check`) runs `core/contract/__tests__/contract.test.ts`,

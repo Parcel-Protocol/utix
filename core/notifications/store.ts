@@ -1,3 +1,4 @@
+import { recordAudit } from "@/core/audit/audit";
 import { notificationMachine, transitionRecord } from "@/core/lifecycle/records";
 import {
   NOTIFICATION_EVENTS,
@@ -210,6 +211,14 @@ export class NotificationStore {
     };
 
     this.write(input.recipient, [notification, ...existing]);
+    recordAudit({
+      action: "notification.published",
+      actor: { kind: "user", id: input.recipient },
+      target: { kind: "notification", id: notification.id },
+      after: { event: input.event, tone: input.tone },
+      at: createdAt,
+      reason: notification.dedupeKey
+    });
     return notification;
   }
 
@@ -249,7 +258,15 @@ export class NotificationStore {
   /** Removes every record for a recipient. Purging is terminal and one-way. */
   clear(recipient: NotificationRecipient): void {
     if (!isNotificationRecipient(recipient)) return;
-    for (const notification of this.read(recipient)) {
+    const existing = this.read(recipient);
+    recordAudit({
+      action: "notification.cleared",
+      actor: { kind: "user", id: recipient },
+      target: { kind: "notification", id: recipient },
+      before: { count: existing.length },
+      reason: "recipient_cleared"
+    });
+    for (const notification of existing) {
       transitionRecord("notification", notification.id, notification.state, "purge", {
         reason: "recipient_cleared"
       });

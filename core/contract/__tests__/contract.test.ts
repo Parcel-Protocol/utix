@@ -19,6 +19,7 @@ import type { FeatureManifest } from "@/core/registry/types";
 import { stateView, workerJobMachine } from "@/core/lifecycle/records";
 import { createIdempotencyStore } from "@/core/idempotency/idempotency";
 import { reconcile, type ReconciliationInput } from "@/core/reconciliation/reconciliation";
+import { getAuditTrail, recordAudit, SENSITIVE_ACTIONS } from "@/core/audit/audit";
 import { manifest as paymentQrManifest } from "@/features/payment-qr/manifest";
 import {
   assertContract,
@@ -121,6 +122,24 @@ const reconciliationReportContract = contractOperation("reconciliation.report", 
   }
 });
 
+const auditEventContract = contractOperation("audit.event", {
+  version: V,
+  fields: {
+    id: { type: "string", required: true },
+    action: { type: "string", required: true },
+    actorId: { type: "string", required: true },
+    scope: { type: "string", required: true },
+    outcome: { type: "string", required: true },
+    at: { type: "string", required: true },
+    correlationId: { type: "string", required: true },
+    "actor.kind": { type: "string", required: true },
+    "target.kind": { type: "string", required: true },
+    "target.id": { type: "string", required: true },
+    reason: { type: "string", required: false },
+    errorCode: { type: "string", required: false }
+  }
+});
+
 const featureManifestContract = contractOperation("feature.manifest", {
   version: V,
   fields: {
@@ -217,6 +236,27 @@ describe("contract drift tests", () => {
     const report = reconcile(drift);
     expect(report.dryRun).toBe(true);
     expect(assertContract(reconciliationReportContract, () => report).ok).toBe(true);
+  });
+
+  it("locks the audit event shape to what the trail records", () => {
+    getAuditTrail().reset();
+    const event = recordAudit({
+      action: "record.state_changed",
+      actor: { kind: "maintainer", id: "ada" },
+      scope: "maintainer",
+      target: { kind: "worker_job", id: "job-1" },
+      reason: "manual_dead_letter",
+      before: { state: "retrying" },
+      after: { state: "dead_lettered", event: "dead_letter" },
+      at: "2026-09-26T00:00:00.000Z"
+    });
+
+    expect(event).toBeDefined();
+    expect(assertContract(auditEventContract, () => event!).ok).toBe(true);
+
+    // The action list is part of the contract: it is what coverage means.
+    expect(SENSITIVE_ACTIONS).toContain("record.state_changed");
+    getAuditTrail().reset();
   });
 
   it("detects a drifted response that drops a required field", () => {

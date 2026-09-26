@@ -176,13 +176,15 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
   function move(
     job: JobPayload,
     event: string,
-    reason: string
+    reason: string,
+    /** Set by the manual entry points: an operator asked, not the worker. */
+    audited = false
   ): Result<JobStatus, JobTransitionCode> {
     const outcome = applyTransition(
       workerJobMachine,
       { id: job.id, state: job.status },
       event,
-      { actor: "worker", reason, correlationId: job.correlationId }
+      { actor: "worker", reason, correlationId: job.correlationId, audited }
     );
     if (!outcome.ok) return outcome;
     job.status = outcome.value.to as JobStatus;
@@ -382,7 +384,7 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
     retryJob(id: string): Result<JobPayload, JobTransitionCode> {
       const job = jobs.get(id);
       if (!job) return err("unknown_state");
-      const moved = move(job, "retry", "manual_retry");
+      const moved = move(job, "retry", "manual_retry", true);
       if (!moved.ok) return moved;
       job.nextAttemptAt = undefined;
       job.attempts = 0;
@@ -392,7 +394,7 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
     deadLetter(id: string): Result<JobPayload, JobTransitionCode> {
       const job = jobs.get(id);
       if (!job) return err("unknown_state");
-      const moved = move(job, "dead_letter", "manual_dead_letter");
+      const moved = move(job, "dead_letter", "manual_dead_letter", true);
       if (!moved.ok) return moved;
       return ok(job);
     },
