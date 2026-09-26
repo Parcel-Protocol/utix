@@ -51,7 +51,11 @@ export const SENSITIVE_ACTIONS = [
   /** A reconciliation dry run produced a report. */
   "reconciliation.reported",
   /** An in-flight idempotency claim was released for a retry. */
-  "idempotency.claim_released"
+  "idempotency.claim_released",
+  /** A maintainer raised, lowered or blocked a quota for a principal or globally. */
+  "quota.override_granted",
+  /** A maintainer removed a quota override before it expired. */
+  "quota.override_revoked"
 ] as const;
 
 export type AuditAction = (typeof SENSITIVE_ACTIONS)[number];

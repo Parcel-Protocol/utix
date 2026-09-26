@@ -160,7 +160,8 @@ event can never carry a payload.
 
 `action` is one of `record.state_changed`, `record.transition_denied`,
 `export.generated`, `notification.published`, `notification.cleared`,
-`reconciliation.reported`, `idempotency.claim_released`. `outcome` is `allowed`
+`reconciliation.reported`, `idempotency.claim_released`,
+`quota.override_granted`, `quota.override_revoked`. `outcome` is `allowed`
 or `denied`, in which case `errorCode` carries the refusal. Refused reads:
 
 ```json
