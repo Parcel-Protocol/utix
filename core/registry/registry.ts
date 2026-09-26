@@ -1,4 +1,8 @@
-import { generatedFeatures } from "@/core/registry/registry.generated";
+import {
+  generatedPanels,
+  generatedRegistrySchemaVersion
+} from "@/core/registry/panels.generated";
+import { assertFeatureRegistryVersion } from "@/core/registry/schema";
 import { findManifest } from "@/core/registry/manifests";
 import type { FeatureEntry } from "@/core/registry/types";
 
@@ -10,6 +14,8 @@ import type { FeatureEntry } from "@/core/registry/types";
  * the shared nav bundle stays metadata-only and the active tool's code loads on
  * demand.
  */
+assertFeatureRegistryVersion(generatedRegistrySchemaVersion, "tool panel registry");
+
 export function findFeature(slug: string): FeatureEntry | undefined {
   const manifest = findManifest(slug);
   const feature = generatedFeatures.find((entry) => entry.manifest.slug === slug);

@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   CONTRACT_STATES,
   checkContractCoverage,
   evaluateContractCoverage
 } from "../../scripts/verify-features.mjs";
 
-const fixturesDir = fileURLToPath(new URL("../../scripts/__tests__/fixtures/", import.meta.url));
+const fixturesDir = path.resolve(process.cwd(), "scripts/__tests__/fixtures");
 
 /**
  * Guards the checker itself, so a regression that makes the runtime contract

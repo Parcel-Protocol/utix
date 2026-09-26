@@ -18,6 +18,8 @@ import {
 
 export interface NetworkContextValue {
   network: StellarNetwork;
+  /** Increases on every real network switch; async work captures this value. */
+  epoch: number;
   label: string;
   horizonUrl: string;
   sorobanRpcUrl: string;
@@ -79,35 +81,57 @@ export function NetworkProvider({
 }) {
   const stored = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const [override, setOverride] = useState<StellarNetwork | undefined>(initialNetwork);
+  const [epoch, setEpoch] = useState(0);
   const network = override ?? stored;
 
   const setNetwork = useCallback((next: StellarNetwork) => {
-    setOverride(undefined);
+    if (next === network) return;
+    setEpoch((current) => current + 1);
+    // Keep the in-memory choice authoritative even when storage is blocked.
+    setOverride(next);
     writeNetwork(next);
     // The Horizon client is memoised per network; a pruning job is enqueued as
     // delayed maintenance work so rapid switches settle before the cache is torn down.
-    if (next !== getSnapshot()) {
-      getMaintenanceFramework().enqueue({
-        operation: PRUNE_HORIZON_CLIENTS_OP,
-        params: { network: next },
-        delayMs: PRUNE_HORIZON_CLIENTS_DELAY_MS
-      });
-    }
-  }, []);
+    getMaintenanceFramework().enqueue({
+      operation: PRUNE_HORIZON_CLIENTS_OP,
+      params: { network: next },
+      delayMs: PRUNE_HORIZON_CLIENTS_DELAY_MS
+    });
+  }, [network]);
 
   const value = useMemo<NetworkContextValue>(
     () => ({
       network,
+      epoch,
       label: NETWORK_LABELS[network],
       horizonUrl: HORIZON_URLS[network],
       sorobanRpcUrl: SOROBAN_RPC_URLS[network],
       networkPassphrase: NETWORK_PASSPHRASES[network],
       setNetwork
     }),
-    [network, setNetwork]
+    [epoch, network, setNetwork]
   );
 
-  return <NetworkContext.Provider value={value}>{children}</NetworkContext.Provider>;
+  return (
+    <NetworkContext.Provider value={value}>
+      <NetworkEpochBoundary network={network} epoch={epoch}>
+        {children}
+      </NetworkEpochBoundary>
+    </NetworkContext.Provider>
+  );
+}
+
+/** Remounts every mounted feature slice atomically when its network identity changes. */
+export function NetworkEpochBoundary({
+  network,
+  epoch,
+  children
+}: {
+  network: StellarNetwork;
+  epoch: number;
+  children: React.ReactNode;
+}) {
+  return <div key={`${network}:${epoch}`} data-network-epoch={epoch}>{children}</div>;
 }
 
 export function useNetwork(): NetworkContextValue {

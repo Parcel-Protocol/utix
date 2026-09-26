@@ -1,4 +1,6 @@
-import { Alert } from "@/core/ui/Alert";
+"use client";
+
+import { StatusMessage } from "@/core/ui/StatusMessage";
 import { TransactionDecoderEmptyState } from "@/features/transaction-decoder/components/TransactionDecoderEmptyState";
 import { TransactionDecoderForm } from "@/features/transaction-decoder/components/TransactionDecoderForm";
 import { TransactionDecoderResult } from "@/features/transaction-decoder/components/TransactionDecoderResult";
@@ -14,8 +16,8 @@ export function TransactionDecoderPanel() {
       <TransactionDecoderForm onSubmit={submit} pending={state.status === "pending"} />
 
       {state.status === "error" ? (
-        <Alert
-          variant="danger"
+        <StatusMessage
+          type="error"
           title={errorCopy[state.code].title}
           description={mapTransactionDecoderError(state.code)}
         />

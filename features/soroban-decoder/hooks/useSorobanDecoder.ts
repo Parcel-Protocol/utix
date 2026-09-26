@@ -1,5 +1,7 @@
+"use client";
+
 import { useState } from "react";
-import { useNetwork } from "@/core/network/useNetwork";
+import { useNetwork } from "@/core/network/NetworkProvider";
 import { decodeSorobanXdr } from "@/features/soroban-decoder/lib/sorobanDecoder";
 import { parseSorobanDecoderInput } from "@/features/soroban-decoder/schema";
 import type {
@@ -21,13 +23,13 @@ export function useSorobanDecoder() {
     setState({ status: "pending" });
     const parseResult = parseSorobanDecoderInput(rawXdr);
     if (!parseResult.ok) {
-      setState({ status: "error", code: parseResult.error });
+      setState({ status: "error", code: parseResult.code });
       return;
     }
 
     const decodeRes = decodeSorobanXdr(parseResult.value, network);
     if (!decodeRes.ok) {
-      setState({ status: "error", code: decodeRes.error });
+      setState({ status: "error", code: decodeRes.code });
       return;
     }
 

@@ -1,6 +1,6 @@
 import { xdr } from "@stellar/stellar-sdk";
 import { err, ok, type Result } from "@/core/result/result";
-import type { Network } from "@/core/network/network";
+import type { StellarNetwork as Network } from "@/core/network/types";
 import type {
   ScValNode,
   SimulationSummary,

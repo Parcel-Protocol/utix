@@ -35,7 +35,7 @@ export function TransactionDecoderForm({
           />
         )}
       </Field>
-      <Button type="submit" disabled={pending}>
+      <Button type="submit" disabled={pending} aria-busy={pending}>
         {pending ? "Decoding..." : copy.submit}
       </Button>
     </form>

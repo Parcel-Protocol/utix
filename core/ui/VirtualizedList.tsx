@@ -57,7 +57,7 @@ export function VirtualizedList<T>({
                 className="absolute inset-x-0"
                 style={{ height: rowHeight, top: index * rowHeight }}
               >
-                {renderItem(item, index)}
+                <div role="gridcell">{renderItem(item, index)}</div>
               </div>
             );
           })}

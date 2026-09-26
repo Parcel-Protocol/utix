@@ -12,6 +12,34 @@ import type {
 
 export const PAGE_SIZE = 20;
 
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function operationKey(operation: OperationSummary): string {
+  return [operation.id, operation.pagingToken, operation.transactionHash, operation.type].join("|");
+}
+
+export function dedupeOperations(operations: OperationSummary[]): OperationSummary[] {
+  const seen = new Set<string>();
+  return operations.filter((operation) => {
+    const key = operationKey(operation);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function sortOperations(operations: OperationSummary[]): OperationSummary[] {
+  return operations
+    .map((operation, index) => ({ operation, index }))
+    .sort((left, right) => {
+      const created = compareStrings(right.operation.createdAt, left.operation.createdAt);
+      return created || left.index - right.index;
+    })
+    .map(({ operation }) => operation);
+}
+
 interface HorizonCollection<T> {
   _embedded: { records: T[] };
 }
@@ -75,8 +103,8 @@ export async function fetchOperationPage(
   signal?: AbortSignal
 ): Promise<{ operations: OperationSummary[]; hasMoreOlder: boolean }> {
   const records = await requestOperations(network, accountId, cursor, signal);
-  const operations = records.map(normalizeHorizonOperation);
-  return { operations, hasMoreOlder: pageHasMoreOlder(operations) };
+  const operations = sortOperations(dedupeOperations(records.map(normalizeHorizonOperation)));
+  return { operations, hasMoreOlder: records.length === PAGE_SIZE };
 }
 
 export async function runOperationBrowser(
@@ -102,6 +130,23 @@ export async function runOperationBrowser(
   } catch (error) {
     return err(toOperationBrowserErrorCode(error));
   }
+}
+
+export function appendOperationPage(
+  result: OperationBrowserResult,
+  operations: OperationSummary[],
+  hasMoreOlder: boolean
+): OperationBrowserResult {
+  const known = new Set(result.pages.flat().map(operationKey));
+  const fresh = dedupeOperations(operations).filter((operation) => !known.has(operationKey(operation)));
+  if (!fresh.length) return { ...result, hasMoreOlder: false };
+
+  return {
+    ...result,
+    pages: [...result.pages, fresh],
+    pageIndex: result.pageIndex + 1,
+    hasMoreOlder
+  };
 }
 
 /** Loads the next older page and appends it to the cached pages. */
@@ -131,13 +176,7 @@ export async function loadOlderOperationPage(
       cursor,
       signal
     );
-
-    return ok({
-      ...result,
-      pages: [...result.pages, operations],
-      pageIndex: nextIndex,
-      hasMoreOlder
-    });
+    return ok(appendOperationPage(result, operations, hasMoreOlder));
   } catch (error) {
     return err(toOperationBrowserErrorCode(error));
   }
