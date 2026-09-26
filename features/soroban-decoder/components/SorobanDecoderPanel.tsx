@@ -1,4 +1,6 @@
-import { Alert } from "@/core/ui/Alert";
+"use client";
+
+import { StatusMessage } from "@/core/ui/StatusMessage";
 import { SorobanDecoderEmptyState } from "@/features/soroban-decoder/components/SorobanDecoderEmptyState";
 import { SorobanDecoderForm } from "@/features/soroban-decoder/components/SorobanDecoderForm";
 import { SorobanDecoderResult } from "@/features/soroban-decoder/components/SorobanDecoderResult";
@@ -14,8 +16,8 @@ export function SorobanDecoderPanel() {
       <SorobanDecoderForm onSubmit={submit} pending={state.status === "pending"} />
 
       {state.status === "error" ? (
-        <Alert
-          variant="danger"
+        <StatusMessage
+          type="error"
           title={errorCopy[state.code].title}
           description={mapSorobanDecoderError(state.code)}
         />

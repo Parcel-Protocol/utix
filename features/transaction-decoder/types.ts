@@ -1,4 +1,4 @@
-import type { Network } from "@/core/network/network";
+import type { StellarNetwork as Network } from "@/core/network/types";
 
 export type TransactionDecoderErrorCode = "empty_input" | "malformed_xdr" | "unsupported_envelope";
 
@@ -10,7 +10,7 @@ export interface DecodedOperation {
   isSponsorship: boolean;
   isMuxedDestination: boolean;
   labels: string[];
-  details: Record<string, string | number | boolean | null>;
+  details: Record<string, unknown>;
 }
 
 export interface DecodedTransactionResult {

@@ -35,7 +35,7 @@ export function PathPaymentInspectorForm({
           />
         )}
       </Field>
-      <Button type="submit" disabled={pending}>
+      <Button type="submit" disabled={pending} aria-busy={pending}>
         {pending ? copy.working : copy.submit}
       </Button>
     </form>

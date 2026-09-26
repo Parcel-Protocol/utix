@@ -12,7 +12,7 @@ export function TransactionDecoderResult({ result }: { result: DecodedTransactio
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle>{copy.resultTitle}</CardTitle>
-            <Badge variant="info">{copy.staticBadge}</Badge>
+            <Badge tone="info">{copy.staticBadge}</Badge>
           </div>
         </CardHeader>
         <DataList

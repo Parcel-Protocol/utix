@@ -35,7 +35,7 @@ export function SorobanDecoderForm({
           />
         )}
       </Field>
-      <Button type="submit" disabled={pending}>
+      <Button type="submit" disabled={pending} aria-busy={pending}>
         {pending ? "Working..." : copy.submit}
       </Button>
     </form>

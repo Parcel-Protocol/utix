@@ -1,4 +1,4 @@
-import type { Network } from "@/core/network/network";
+import type { StellarNetwork as Network } from "@/core/network/types";
 
 export type SorobanDecoderErrorCode = "empty_input" | "malformed_xdr" | "unsupported_envelope";
 
