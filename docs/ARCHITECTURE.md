@@ -19,6 +19,7 @@ scripts/     registry generation, scaffolding, contract verification
 | `core/workers` | Background worker framework: delayed, retryable, dead-lettered jobs |
 | `core/lifecycle` | Record state machines: declared states, legal transitions, rejected moves |
 | `core/idempotency` | Idempotency keys, persisted outcomes and replay protection |
+| `core/reconciliation` | Read-only dry-run reconciliation of stored records against derived state |
 | `core/export` | Privacy-safe, scoped, schema-versioned data exports |
 | `core/contract` | API contract schemas and drift detection |
 | `core/network` | Network selection, URLs, passphrases, `NetworkProvider` |
@@ -111,7 +112,9 @@ npm run check    # registry → lint → test → verify:features → verify:iss
 CI runs the same steps on every pull request, including
 `npm run verify:features`, which fails a slice that does not meet the contract,
 `npm run verify:issues`, which preserves a backlog of at least 40
-independent specifications with a stable 20-issue advanced wave, and
+independent specifications with a stable 20-issue advanced wave,
+`npm run verify:reconciliation`, which fails if a declared invariant is never
+checked or if the dry run ever grows a write path, and
 `npm run verify:fixtures`, which imports every `features/*/fixtures/*.fixture.ts`
 file and fails with the specific file if a `@stellar/stellar-sdk` upgrade
 broke it.

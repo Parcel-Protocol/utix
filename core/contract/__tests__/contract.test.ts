@@ -18,6 +18,7 @@ import {
 import type { FeatureManifest } from "@/core/registry/types";
 import { stateView, workerJobMachine } from "@/core/lifecycle/records";
 import { createIdempotencyStore } from "@/core/idempotency/idempotency";
+import { reconcile, type ReconciliationInput } from "@/core/reconciliation/reconciliation";
 import { manifest as paymentQrManifest } from "@/features/payment-qr/manifest";
 import {
   assertContract,
@@ -103,6 +104,23 @@ const idempotencyRecordContract = contractOperation("idempotency.record", {
   }
 });
 
+const reconciliationReportContract = contractOperation("reconciliation.report", {
+  version: V,
+  fields: {
+    runId: { type: "string", required: true },
+    startedAt: { type: "string", required: true },
+    finishedAt: { type: "string", required: true },
+    dryRun: { type: "boolean", required: true },
+    checks: { type: "array", required: true },
+    findings: { type: "array", required: true },
+    clean: { type: "boolean", required: true },
+    "summary.total": { type: "number", required: true },
+    "summary.inconsistent": { type: "number", required: true },
+    "findings.0.invariant": { type: "string", required: false },
+    "findings.0.repair": { type: "string", required: false }
+  }
+});
+
 const featureManifestContract = contractOperation("feature.manifest", {
   version: V,
   fields: {
@@ -183,6 +201,22 @@ describe("contract drift tests", () => {
     expect(completed.ok).toBe(true);
     if (!completed.ok) return;
     expect(assertContract(idempotencyRecordContract, () => completed.value).ok).toBe(true);
+  });
+
+  it("locks the reconciliation report shape", () => {
+    const drift: ReconciliationInput = {
+      storedBalances: [{ account: "G1", asset: "USDC", balance: "10.50" }],
+      ledgerBalances: [{ account: "G1", asset: "USDC", balance: "10.51", reference: "ledger:100" }],
+      jobs: [],
+      notifications: [],
+      idempotencyRecords: [],
+      exportEnvelopes: [],
+      operations: [],
+      now: Date.parse("2026-09-26T00:00:00.000Z")
+    };
+    const report = reconcile(drift);
+    expect(report.dryRun).toBe(true);
+    expect(assertContract(reconciliationReportContract, () => report).ok).toBe(true);
   });
 
   it("detects a drifted response that drops a required field", () => {

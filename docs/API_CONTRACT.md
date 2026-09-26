@@ -17,6 +17,7 @@ Locked operations (see `core/contract/__tests__/contract.test.ts`):
 | `feature.manifest`  | Registry metadata every feature publishes                   |
 | `lifecycle.state`   | Derived state view shared by the UI and API responses        |
 | `idempotency.record` | Persisted outcome replayed for a retried write             |
+| `reconciliation.report` | Read-only dry-run drift report                         |
 
 ## Conventions
 
@@ -135,6 +136,18 @@ Refused keys:
 Codes: `idempotency_key_missing`, `idempotency_key_invalid`,
 `idempotency_key_expired`, `idempotency_key_conflict`, `idempotency_in_flight`,
 `idempotency_not_found`. See [IDEMPOTENCY.md](./IDEMPOTENCY.md).
+
+## 8. Reconciliation report — `reconciliation.report`
+
+Read-only output of a dry run. `dryRun` is always `true`; there is no repair
+field that mutates anything.
+
+```json
+{"runId":"…","startedAt":"2026-09-26T00:00:00.000Z","finishedAt":"2026-09-26T00:00:00.000Z","dryRun":true,"checks":[{"invariant":"balance.amount_agrees","checked":4,"findings":1}],"findings":[{"id":"balance.amount_agrees:G1|USDC","invariant":"balance.amount_agrees","kind":"inconsistent","severity":"critical","subject":"stored_balance","recordId":"G1|USDC","detail":"Stored USDC balance disagrees with ledger reference ledger:100.","expected":"10.51","observed":"10.50","repair":"Treat the ledger as authoritative and re-cache the line. …"}],"summary":{"missing":0,"duplicate":0,"stale":1,"inconsistent":1,"total":2},"clean":false}
+```
+
+`kind` is one of `missing`, `duplicate`, `stale`, `inconsistent`. See
+[RECONCILIATION.md](./RECONCILIATION.md).
 
 ## Drift detection
 

@@ -81,6 +81,12 @@ const retry = workers.submit({ operation: "mail.send", idempotencyKey: requestId
 retry.ok && retry.value.replayed; // true — same job id, one queued job
 ```
 
+## Reconciliation dry run
+
+`core/reconciliation/` registers `reconciliation.dry_run`: a read-only job that
+compares stored records against derived balances and emits a drift report. It
+has no repair path — see [RECONCILIATION.md](./RECONCILIATION.md).
+
 ## Moving one operation in already
 
 The Horizon client cache prune was previously a plain call inside request
