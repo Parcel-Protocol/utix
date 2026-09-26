@@ -1,0 +1,37 @@
+{
+  "address-validator": {
+    "totalSize": 102400,
+    "sizeKB": 100,
+    "timestamp": "2026-09-25T00:00:00.000Z"
+  },
+  "balance-viewer": {
+    "totalSize": 122880,
+    "sizeKB": 120,
+    "timestamp": "2026-09-25T00:00:00.000Z"
+  },
+  "trustline-checker": {
+    "totalSize": 92160,
+    "sizeKB": 90,
+    "timestamp": "2026-09-25T00:00:00.000Z"
+  },
+  "payment-qr": {
+    "totalSize": 153600,
+    "sizeKB": 150,
+    "timestamp": "2026-09-25T00:00:00.000Z"
+  },
+  "transaction-lookup": {
+    "totalSize": 112640,
+    "sizeKB": 110,
+    "timestamp": "2026-09-25T00:00:00.000Z"
+  },
+  "freighter-connect": {
+    "totalSize": 71680,
+    "sizeKB": 70,
+    "timestamp": "2026-09-25T00:00:00.000Z"
+  },
+  "testnet-faucet": {
+    "totalSize": 81920,
+    "sizeKB": 80,
+    "timestamp": "2026-09-25T00:00:00.000Z"
+  }
+}
