@@ -1,8 +1,8 @@
-import { formatAmount as formatBalanceAmount } from "@/features/balance-viewer/lib/format";
-import type { ClaimableBalanceSummary } from "@/features/claimable-balances/types";
-
 export function formatAmount(value: string): string {
-  return formatBalanceAmount(value);
+  const [whole, fraction = ""] = value.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const trimmed = fraction.replace(/0+$/, "");
+  return trimmed ? `${grouped}.${trimmed}` : grouped;
 }
 
 export function formatTimestamp(iso: string): string {
