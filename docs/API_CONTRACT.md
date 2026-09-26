@@ -16,6 +16,7 @@ Locked operations (see `core/contract/__tests__/contract.test.ts`):
 | `export.envelope`   | Export artifact from `core/export`                          |
 | `feature.manifest`  | Registry metadata every feature publishes                   |
 | `lifecycle.state`   | Derived state view shared by the UI and API responses        |
+| `idempotency.record` | Persisted outcome replayed for a retried write             |
 
 ## Conventions
 
@@ -116,6 +117,24 @@ A rejected transition is a `Result`, not an exception:
 Codes: `unknown_record_kind`, `unknown_state`, `unknown_event`,
 `invalid_transition`, `terminal_state`. See
 [LIFECYCLE.md](./LIFECYCLE.md).
+
+## 7. Idempotency record — `idempotency.record`
+
+A retried write replays this record instead of repeating the side effect.
+
+```json
+{"key":"export:2026-09-26:1","operation":"export.generate","requestHash":"req-37be50f9","status":"completed","response":{"recordCount":2},"createdAt":"2026-09-26T00:00:00.000Z","expiresAt":"2026-09-27T00:00:00.000Z","replays":1,"correlationId":"8f0c…06"}
+```
+
+Refused keys:
+
+```json
+{"ok":false,"code":"idempotency_key_conflict"}
+```
+
+Codes: `idempotency_key_missing`, `idempotency_key_invalid`,
+`idempotency_key_expired`, `idempotency_key_conflict`, `idempotency_in_flight`,
+`idempotency_not_found`. See [IDEMPOTENCY.md](./IDEMPOTENCY.md).
 
 ## Drift detection
 

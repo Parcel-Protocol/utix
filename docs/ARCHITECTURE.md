@@ -18,6 +18,7 @@ scripts/     registry generation, scaffolding, contract verification
 | `core/telemetry` | Structured, redacted logs for every critical path |
 | `core/workers` | Background worker framework: delayed, retryable, dead-lettered jobs |
 | `core/lifecycle` | Record state machines: declared states, legal transitions, rejected moves |
+| `core/idempotency` | Idempotency keys, persisted outcomes and replay protection |
 | `core/export` | Privacy-safe, scoped, schema-versioned data exports |
 | `core/contract` | API contract schemas and drift detection |
 | `core/network` | Network selection, URLs, passphrases, `NetworkProvider` |

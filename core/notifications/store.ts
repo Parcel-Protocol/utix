@@ -11,6 +11,10 @@ import {
 } from "@/core/notifications/types";
 
 const STORAGE_PREFIX = "utix:notifications:v1:";
+/** The initial state, taken from the lifecycle table rather than repeated. */
+const INITIAL_STATE = notificationMachine.initial() as NotificationState;
+const READ_STATE: NotificationState = "read";
+
 const PUBLIC_ACCOUNT = /^account:G[A-Z2-7]{55}$/;
 const SECRET = /\bS[A-Z2-7]{55}\b/g;
 
@@ -102,11 +106,11 @@ function parseNotification(value: unknown): Notification | null {
     return null;
   }
 
-  const state = isNotificationState(item.state)
+  const state: NotificationState = isNotificationState(item.state)
     ? item.state
     : item.read === true
-      ? "read"
-      : notificationMachine.initial();
+      ? READ_STATE
+      : INITIAL_STATE;
 
   return {
     id: item.id,
@@ -120,7 +124,7 @@ function parseNotification(value: unknown): Notification | null {
     createdAt: item.createdAt,
     state,
     // Derived once, from the single source of truth.
-    read: state === "read" || state === "archived"
+    read: state === READ_STATE || state === "archived"
   };
 }
 
@@ -201,7 +205,7 @@ export class NotificationStore {
       href,
       dedupeKey,
       createdAt,
-      state: notificationMachine.initial(),
+      state: INITIAL_STATE,
       read: false
     };
 
@@ -224,7 +228,7 @@ export class NotificationStore {
       actor: `account:${recipient.startsWith("account:") ? recipient.slice(8) : "workspace"}`
     });
     if (!moved.ok) return null;
-    const notification: Notification = { ...current, state: "read", read: true };
+    const notification: Notification = { ...current, state: READ_STATE, read: true };
     notifications[index] = notification;
     this.write(recipient, notifications);
     return notification;
@@ -236,7 +240,7 @@ export class NotificationStore {
     const notifications = this.read(recipient).map((notification) => {
       if (!notificationMachine.canTransition(notification.state, "read").ok) return notification;
       transitionRecord("notification", notification.id, notification.state, "read");
-      return { ...notification, state: "read", read: true };
+      return { ...notification, state: READ_STATE, read: true };
     });
     this.write(recipient, notifications);
     return notifications;

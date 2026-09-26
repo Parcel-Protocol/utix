@@ -68,6 +68,19 @@ if (!retried.ok && retried.code === "terminal_state") {
 anything, and `stateView("worker_job", job.status)` is what a UI badge or an API
 response should render.
 
+## Retried submissions
+
+`submit()` is the guarded enqueue: it takes an `idempotencyKey`, records the
+outcome and replays it for a retried request, so a double submission cannot
+queue the job twice. See [IDEMPOTENCY.md](./IDEMPOTENCY.md).
+
+```ts
+const first = workers.submit({ operation: "mail.send", idempotencyKey: requestId });
+// …the response is lost and the client retries with the same key…
+const retry = workers.submit({ operation: "mail.send", idempotencyKey: requestId });
+retry.ok && retry.value.replayed; // true — same job id, one queued job
+```
+
 ## Moving one operation in already
 
 The Horizon client cache prune was previously a plain call inside request

@@ -16,6 +16,12 @@
  * the UI reads its state from the same table the worker uses.
  */
 
+import {
+  createIdempotencyStore,
+  type IdempotencyErrorCode,
+  type IdempotencyRecord,
+  type IdempotencyStore
+} from "@/core/idempotency/idempotency";
 import { applyTransition, type LifecycleErrorCode } from "@/core/lifecycle/lifecycle";
 import { workerJobMachine } from "@/core/lifecycle/records";
 import { err, ok, type Result } from "@/core/result/result";
@@ -58,6 +64,18 @@ export interface JobInput {
   correlationId?: string;
   /** When set, the first run is scheduled this many ms after enqueueing. */
   delayMs?: number;
+  /**
+   * Idempotency key for the enqueue itself. Use `submit()` rather than
+   * `enqueue()` when a retry must not create a second job.
+   */
+  idempotencyKey?: string;
+}
+
+export interface SubmitResult {
+  readonly job: JobPayload;
+  /** True when the key replayed a recorded outcome instead of enqueueing. */
+  readonly replayed: boolean;
+  readonly record: IdempotencyRecord<{ jobId: string }>;
 }
 
 export interface WorkerContext {
@@ -75,6 +93,8 @@ export interface RetryPolicy {
   retryDelayMs: number;
   /** Total attempts including the first, after which a job is dead-lettered. */
   maxAttempts: number;
+  /** How long a recorded enqueue outcome stays replayable. */
+  idempotencyTtlMs: number;
 }
 
 export interface RunSummary {
@@ -85,11 +105,22 @@ export interface RunSummary {
   deadLettered: number;
 }
 
-const DEFAULT_POLICY: RetryPolicy = { retryDelayMs: 250, maxAttempts: 3 };
+const DEFAULT_POLICY: RetryPolicy = {
+  retryDelayMs: 250,
+  maxAttempts: 3,
+  idempotencyTtlMs: 24 * 60 * 60 * 1_000
+};
 
 export interface WorkerFramework {
   register(operation: string, handler: JobHandler, policy?: Partial<RetryPolicy>): void;
   enqueue(input: JobInput): JobPayload;
+  /**
+   * The high-risk write path: enqueues under an idempotency key so a retried
+   * submission replays the original job instead of creating a duplicate.
+   */
+  submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode>;
+  /** The idempotency records this framework has persisted. */
+  idempotency(): IdempotencyStore;
   /** Executes every due job once and returns the lifecycle summary. */
   drainDueJobs(now?: number): RunSummary;
   /** Idempotent reprocess of a single job by id. */
@@ -136,6 +167,7 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
   const mergedPolicy: RetryPolicy = { ...DEFAULT_POLICY, ...policy };
   const registrations = new Map<string, { handler: JobHandler; retryDelayMs: number; maxAttempts: number }>();
   const jobs = new Map<string, JobPayload>();
+  const idempotencyStore = createIdempotencyStore({ ttlMs: mergedPolicy.idempotencyTtlMs });
 
   /**
    * The only place a job's status changes. Anything the `worker_job` table does
@@ -240,7 +272,9 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
     else summary.failed += 1;
   }
 
-  return {
+  // Named so `submit()` can reach the public enqueue without re-entering the
+  // object literal while it is being built.
+  const framework: WorkerFramework = {
     register(operation, handler, custom = {}): void {
       if (registrations.has(operation)) {
         throw new Error(`[workers] handler already registered for ${operation}`);
@@ -277,6 +311,46 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
       };
       jobs.set(job.id, job);
       return job;
+    },
+
+    submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode> {
+      const begun = idempotencyStore.begin({
+        key: input.idempotencyKey,
+        operation: "worker.enqueue",
+        request: {
+          operation: input.operation,
+          params: input.params ?? {},
+          dedupeKey: input.dedupeKey ?? null,
+          maxAttempts: input.maxAttempts ?? mergedPolicy.maxAttempts,
+          delayMs: input.delayMs ?? null
+        },
+        correlationId: input.correlationId
+      });
+      if (!begun.ok) return begun;
+
+      if (begun.value.replay) {
+        const recorded = begun.value.record as IdempotencyRecord<{ jobId: string }>;
+        const jobId = recorded.response?.jobId;
+        const job = jobId ? jobs.get(jobId) : undefined;
+        if (!job) {
+          // The recorded outcome outlived the in-memory job: the caller still
+          // gets a consistent answer rather than a second enqueue.
+          return err("idempotency_not_found");
+        }
+        return ok({ job, replayed: true, record: recorded });
+      }
+
+      const job = framework.enqueue(input);
+      const completed = idempotencyStore.complete(input.idempotencyKey!, { jobId: job.id });
+      if (!completed.ok) {
+        idempotencyStore.abandon(input.idempotencyKey!);
+        return completed;
+      }
+      return ok({ job, replayed: false, record: completed.value });
+    },
+
+    idempotency(): IdempotencyStore {
+      return idempotencyStore;
     },
 
     drainDueJobs(now = Date.now()): RunSummary {
@@ -339,6 +413,9 @@ export function createWorkerFramework(policy: Partial<RetryPolicy> = {}): Worker
     reset(): void {
       jobs.clear();
       registrations.clear();
+      idempotencyStore.reset();
     }
   };
+
+  return framework;
 }

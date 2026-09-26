@@ -23,6 +23,7 @@ See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) and
 Infrastructure docs: [Telemetry](./docs/TELEMETRY.md) ·
 [Workers](./docs/WORKERS.md) · [Exports](./docs/EXPORTS.md) ·
 [Record lifecycles](./docs/LIFECYCLE.md) ·
+[Idempotency](./docs/IDEMPOTENCY.md) ·
 [API Contract](./docs/API_CONTRACT.md).
 
 ## Tools
@@ -75,6 +76,7 @@ npm run verify:telemetry     # verify >= 5 operations are instrumented
 npm run verify:contract      # run the API contract drift tests
 npm run test:workers         # run the background worker suite
 npm test -- core/lifecycle   # allowed and rejected record state transitions
+npm test -- core/idempotency # retry, replay, expiry and key collisions
 npm run issues               # preview the next five GrantFox issue payloads
 npm run test                 # unit, hook, component and accessibility tests
 npm run test:e2e              # full Playwright suite

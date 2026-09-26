@@ -11,6 +11,11 @@
  * the workflow is unit-testable without a store.
  */
 
+import {
+  createIdempotencyStore,
+  type IdempotencyErrorCode,
+  type IdempotencyStore
+} from "@/core/idempotency/idempotency";
 import { err, ok, type Result } from "@/core/result/result";
 import { paginateByCursor } from "@/core/pagination/cursor";
 import {
@@ -24,7 +29,8 @@ export type ExportErrorCode =
   | "export_denied"
   | "schema_unsupported"
   | "empty_source"
-  | "unsupported_scope";
+  | "unsupported_scope"
+  | IdempotencyErrorCode;
 
 /** Increment on any breaking change to record shapes or the envelope. */
 export const EXPORT_CURRENT_SCHEMA_VERSION = "1.0";
@@ -67,6 +73,12 @@ export interface ExportRequest {
   page?: number;
   /** Opaque cursor returned by a previous page. */
   cursor?: string;
+  /**
+   * When set, generating this export is a high-risk write guarded by an
+   * idempotency key: a retried request replays the same envelope instead of
+   * producing a second artifact (and a second notification).
+   */
+  idempotencyKey?: string;
 }
 
 export interface ExportEnvelope {
@@ -140,6 +152,20 @@ function collectWithCursorKeys(records: ExportRecord[]): CollectedExportRecord[]
 }
 
 /**
+ * Persisted generation outcomes, one store per session. Held behind a ref so a
+ * test can install an isolated store; the default is in-memory.
+ */
+const exportIdempotencyRef: { current: IdempotencyStore } = { current: createIdempotencyStore() };
+
+/** Test seam: installs an isolated store and returns it. */
+export function createExportIdempotencyStore(
+  store: IdempotencyStore = createIdempotencyStore()
+): IdempotencyStore {
+  exportIdempotencyRef.current = store;
+  return store;
+}
+
+/**
  * Generates a scoped, versioned export from the given sources.
  *
  * Records are filtered to the requested scope, sensitive-shaped fields are
@@ -153,8 +179,32 @@ export function exportRecords(
     "export.generate",
     { actorType: "user", correlationId: request.correlationId },
     () => {
+      // Replay before doing any work: a duplicate submission must not collect
+      // records or mint a second artifact.
+      const protectedRequest = request.idempotencyKey;
+      if (protectedRequest) {
+        const begun = exportIdempotencyRef.current.begin<ExportEnvelope>({
+          key: request.idempotencyKey,
+          operation: "export.generate",
+          request: {
+            schemaVersion: request.schemaVersion,
+            scope: request.scope,
+            actor: request.actor.kind,
+            pageSize: request.pageSize ?? null,
+            page: request.page ?? null,
+            cursor: request.cursor ?? null
+          },
+          correlationId: request.correlationId
+        });
+        if (!begun.ok) return begun;
+        if (begun.value.replay && begun.value.record.response) {
+          return ok(begun.value.record.response);
+        }
+      }
+
       const authorization = authorizeExport(request.actor, request.scope);
       if (!authorization.ok) {
+        if (protectedRequest) exportIdempotencyRef.current.fail(protectedRequest, "export_denied");
         emitTelemetry({
           op: "export.authorize",
           actorType: "user",
@@ -166,6 +216,7 @@ export function exportRecords(
       }
 
       if (request.schemaVersion !== EXPORT_CURRENT_SCHEMA_VERSION) {
+        if (protectedRequest) exportIdempotencyRef.current.fail(protectedRequest, "schema_unsupported");
         return err("schema_unsupported");
       }
 
@@ -211,6 +262,14 @@ export function exportRecords(
         hasMore: cursorPage.hasMore,
         records: paged.map((record) => redact(record) as ExportRecord)
       };
+
+      if (protectedRequest) {
+        const completed = exportIdempotencyRef.current.complete(protectedRequest, envelope);
+        if (!completed.ok) {
+          exportIdempotencyRef.current.abandon(protectedRequest);
+          return completed;
+        }
+      }
 
       return ok(envelope);
     }

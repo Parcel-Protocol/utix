@@ -17,6 +17,7 @@ import {
 } from "@/core/export/exporter";
 import type { FeatureManifest } from "@/core/registry/types";
 import { stateView, workerJobMachine } from "@/core/lifecycle/records";
+import { createIdempotencyStore } from "@/core/idempotency/idempotency";
 import { manifest as paymentQrManifest } from "@/features/payment-qr/manifest";
 import {
   assertContract,
@@ -85,6 +86,20 @@ const lifecycleStateContract = contractOperation("lifecycle.state", {
     tone: { type: "string", required: true },
     terminal: { type: "boolean", required: true },
     allowedEvents: { type: "array", required: true }
+  }
+});
+
+const idempotencyRecordContract = contractOperation("idempotency.record", {
+  version: V,
+  fields: {
+    key: { type: "string", required: true },
+    operation: { type: "string", required: true },
+    requestHash: { type: "string", required: true },
+    status: { type: "string", required: true },
+    createdAt: { type: "string", required: true },
+    expiresAt: { type: "string", required: true },
+    replays: { type: "number", required: true },
+    correlationId: { type: "string", required: true }
   }
 });
 
@@ -159,6 +174,15 @@ describe("contract drift tests", () => {
     const terminal = stateView("worker_job", "succeeded");
     expect(terminal.terminal).toBe(workerJobMachine.isTerminal("succeeded"));
     expect(terminal.allowedEvents).toEqual(workerJobMachine.allowedEvents("succeeded"));
+  });
+
+  it("locks the idempotency record a retried write replays", () => {
+    const store = createIdempotencyStore();
+    store.begin({ key: "contract-key-01", operation: "export.generate", request: { page: 1 } });
+    const completed = store.complete("contract-key-01", { recordCount: 0 });
+    expect(completed.ok).toBe(true);
+    if (!completed.ok) return;
+    expect(assertContract(idempotencyRecordContract, () => completed.value).ok).toBe(true);
   });
 
   it("detects a drifted response that drops a required field", () => {
