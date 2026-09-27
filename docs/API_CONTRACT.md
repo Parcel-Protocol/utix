@@ -6,7 +6,9 @@ that integration points and downstream consumers rely on. This document is the
 single source of truth for those shapes, and `core/contract/` enforces them
 with drift tests that fail CI whenever a response shape changes incompatibly.
 
-Locked operations (see `core/contract/__tests__/contract.test.ts`):
+Locked operations (see `core/contract/__tests__/contract.test.ts`). Each one is
+version-negotiated before its payload is read — see
+[Version negotiation](#version-negotiation):
 
 | Operation           | Shape                                                       |
 |---------------------|-------------------------------------------------------------|
@@ -170,6 +172,53 @@ or `denied`, in which case `errorCode` carries the refusal. Refused reads:
 
 Codes: `audit_denied`, `invalid_audit_field`, `invalid_filter`,
 `audit_not_found`. See [AUDIT.md](./AUDIT.md).
+
+## Version negotiation
+
+Every operation that carries a `schemaVersion` is negotiated *before* its
+payload is interpreted, so a consumer never reads a shape this build does not
+speak. `negotiateSchemaVersion` in `core/contract/contract.ts` is the boundary;
+`negotiateSchemaVersionOrError` returns the same answer as the shared `Result`
+for callers that switch on the code.
+
+Four outcomes, because they call for four different responses:
+
+| Requested          | Code                 | `guidance`      | Meaning |
+|--------------------|----------------------|-----------------|---------|
+| absent / empty     | `schema_missing`     | `upgrade`       | No version was sent. A caller bug: nothing about the payload can be trusted, and falling back would mean guessing a version. |
+| older, still served| — (served)           | —               | Served, and reported with `status: "deprecated"`. The payload is valid; plan the upgrade before it stops being served. |
+| newer than current | `schema_future`      | `safe_fallback` | The payload may mean something this build cannot read. Ignore it and use defaults; retrying only helps once the consumer is upgraded. |
+| anything else      | `schema_unsupported` | `upgrade`       | Not served by this build, and not parseable as a version either. The refusal lists the versions that are served. |
+
+`retry` is reserved for a genuinely transient version problem and is not
+produced today; it exists so a future code has a home rather than overloading
+`upgrade`.
+
+```ts
+const outcome = negotiateSchemaVersionOrError({
+  requested: payload.schemaVersion,
+  current: EXPORT_CURRENT_SCHEMA_VERSION,
+  deprecated: ["0.9"]
+});
+
+if (!outcome.ok) {
+  // outcome.detail.guidance tells a caller whether to retry, upgrade, or fall back.
+  return err(outcome.code, outcome.detail);
+}
+```
+
+Two rules for changing any of this:
+
+- a *new* older version that is still served must be added to the `deprecated`
+  list, not to a new code — a consumer that handled a deprecation keeps working
+  when the version is finally dropped, and the transition is a documentation
+  change rather than a new failure mode
+- a version string that is not `major.minor` is refused as
+  `schema_unsupported` rather than coerced. `"latest"` must never be resolved to
+  whatever happens to be current.
+
+The fixtures in `core/contract/fixtures/schemaVersions.ts` cover each row above,
+and `core/contract/__tests__/schemaVersion.test.ts` negotiates every one of them.
 
 ## Drift detection
 
