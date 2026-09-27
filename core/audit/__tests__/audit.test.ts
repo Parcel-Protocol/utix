@@ -114,6 +114,35 @@ describe("audit trail", () => {
     expect(auditContext({ only: { nested: 1 } })).toBeUndefined();
   });
 
+  it("redacts key-case variations and embedded bearer tokens in audit context", () => {
+    const context = auditContext({
+      API_KEY: "my-key-value",
+      bearerToken: "custom-token",
+      PASSWORD: "my-password",
+      normal: "hello Bearer secret-auth-token-12345 world"
+    })!;
+
+    expect(context.API_KEY).toBe("[REDACTED]");
+    expect(context.bearerToken).toBe("[REDACTED]");
+    expect(context.PASSWORD).toBe("[REDACTED]");
+    expect(context.normal).toBe("hello [REDACTED] world");
+  });
+
+  it("handles circular and complex objects in audit input without crashing", () => {
+    const cyclicObj: Record<string, unknown> = { status: "pending" };
+    cyclicObj.loop = cyclicObj;
+
+    const event = record({
+      before: { status: "initial", cyclic: cyclicObj as unknown as string }
+    });
+
+    expect(event).toBeDefined();
+    expect(event?.outcome).toBe("allowed");
+    const all = getAuditTrail().all();
+    expect(all).toHaveLength(1);
+    expect(() => JSON.stringify(all)).not.toThrow();
+  });
+
   it("is append-only: recording never rewrites an earlier event", () => {
     const first = record({ target: { kind: "worker_job", id: "job-1" } })!;
     const second = record({ target: { kind: "worker_job", id: "job-2" }, reason: "manual_retry" })!;
