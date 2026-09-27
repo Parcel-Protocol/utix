@@ -27,6 +27,13 @@ jobs:
       - name: Generate feature registry
         run: npm run registry
 
+      - name: Assert generated registry has no uncommitted changes
+        run: |
+          if ! git diff --exit-code core/registry/; then
+            echo "::error::Stale generated registry files detected in core/registry/. Run 'npm run registry' and commit the changes."
+            exit 1
+          fi
+
       - name: Verify the feature contract
         run: npm run verify:features
 
