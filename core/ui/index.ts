@@ -1,4 +1,13 @@
 export { AccessibleGrid, type AccessibleGridColumn, type AccessibleGridProps } from "@/core/ui/AccessibleGrid";
+export {
+  AccessibleTree,
+  MAX_ACCESSIBLE_TREE_DEPTH,
+  validateAccessibleTreeNodes,
+  type AccessibleTreeNode,
+  type AccessibleTreeValidation,
+  type AccessibleTreeValidationIssue,
+  type AccessibleTreeValidationIssueCode
+} from "@/core/ui/AccessibleTree";
 export { AsyncStatusAnnouncer, type AsyncStatusAnnouncerProps } from "@/core/ui/AsyncStatusAnnouncer";
 export { Badge, type BadgeProps } from "@/core/ui/Badge";
 export { Button, type ButtonProps } from "@/core/ui/Button";

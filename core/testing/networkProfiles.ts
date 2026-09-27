@@ -117,6 +117,8 @@ export interface ProfileFixtures {
   };
 }
 
+import type { TelemetryCaptureSink } from "@/core/telemetry/telemetry";
+
 export interface NetworkProfileContext {
   /** The profile being tested. */
   profile: NetworkProfile;
@@ -124,6 +126,10 @@ export interface NetworkProfileContext {
   fixtures: ProfileFixtures;
   /** Pre-built MSW handlers for this profile. */
   handlers: RequestHandler[];
+  /** Server instance for MSW overrides. */
+  server?: unknown;
+  /** In-memory capture sink for telemetry assertions during profile tests. */
+  telemetry?: TelemetryCaptureSink;
 }
 
 // ---------------------------------------------------------------------------
