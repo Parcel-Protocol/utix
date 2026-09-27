@@ -44,32 +44,132 @@ export interface TelemetrySink {
 
 const STELLAR_SECRET_PREFIXES = ["S", "M"] as const;
 
+export const MAX_REDACT_DEPTH = 16;
+export const MAX_SCANNABLE_STRING_LENGTH = 500_000;
+
+/** Embedded Stellar secret seed (56 characters starting with S or M). */
+const EMBEDDED_STELLAR_SECRET = /\b[SM][A-Z2-7]{55}\b/g;
+
+/** Embedded bearer tokens / authorization headers. */
+const EMBEDDED_BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/-]+\b/gi;
+
+function isSensitiveKey(key: string): boolean {
+  if (/public/i.test(key)) return false;
+  return /secret|seed|password|passphrase|token|auth|authorization|credential|bearer|cookie|(?:^|[_\b]|private|api|secret|signing)key/i.test(key);
+}
+
 function looksLikeSecret(value: string): boolean {
   if (value.length < 10 || value.length > 128) return false;
   return STELLAR_SECRET_PREFIXES.some((prefix) => value.startsWith(prefix));
 }
 
 /**
+ * Scans and scrubs secret seeds, bearer tokens, or full secrets in strings.
+ */
+function scrubString(value: string): string {
+  if (looksLikeSecret(value)) return "[REDACTED]";
+  const candidate =
+    value.length > MAX_SCANNABLE_STRING_LENGTH
+      ? value.slice(0, MAX_SCANNABLE_STRING_LENGTH) + "…[TRUNCATED]"
+      : value;
+  return candidate
+    .replace(/\b[SM][A-Z2-7]{55}\b/g, "[REDACTED]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+\b/gi, "[REDACTED]");
+}
+
+/**
  * Recursively replaces values that look like secret material so no sink ever
  * sees a seed key, passphrase or bearer token. Keys are always preserved so
  * the shape of a record stays stable and queryable.
+ *
+ * Implements bounded traversal depth (MAX_REDACT_DEPTH) and cycle detection
+ * to guarantee that circular objects never cause infinite recursion and the
+ * result is safely serializable.
  */
-export function redact(value: unknown): unknown {
+export function redact(
+  value: unknown,
+  depth = 0,
+  seen: WeakSet<object> = new WeakSet<object>()
+): unknown {
   if (typeof value === "string") {
-    return looksLikeSecret(value) ? "[REDACTED]" : value;
+    return scrubString(value);
   }
   if (value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map(redact);
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "function" || typeof value === "symbol") {
+    return undefined;
+  }
+
+  if (depth >= MAX_REDACT_DEPTH) {
+    return "[TRUNCATED_DEPTH]";
+  }
+
   if (typeof value === "object") {
+    if (seen.has(value)) {
+      return "[CIRCULAR]";
+    }
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      return value.map((entry) => redact(entry, depth + 1, seen));
+    }
+
+    if (value instanceof Error) {
+      const out: Record<string, unknown> = {
+        name: value.name,
+        message: scrubString(value.message)
+      };
+      if (value.stack) {
+        out.stack = scrubString(value.stack);
+      }
+      return out;
+    }
+
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
-      out[key] = /secret|seed|key|token|password|passphrase/i.test(key)
+      out[key] = isSensitiveKey(key)
         ? "[REDACTED]"
-        : redact(entry);
+        : redact(entry, depth + 1, seen);
     }
     return out;
   }
+
   return value;
+}
+
+export interface TelemetryCaptureSink extends TelemetrySink {
+  readonly events: readonly TelemetryEvent[];
+  clear(): void;
+  find(predicate: (event: TelemetryEvent) => boolean): TelemetryEvent | undefined;
+  filter(predicate: (event: TelemetryEvent) => boolean): TelemetryEvent[];
+  latest(): TelemetryEvent | undefined;
+}
+
+/** In-memory capture sink for testing assertions against emitted telemetry events. */
+export function createCaptureSink(): TelemetryCaptureSink {
+  const captured: TelemetryEvent[] = [];
+  return {
+    get events() {
+      return [...captured];
+    },
+    emit(event: TelemetryEvent): void {
+      captured.push(event);
+    },
+    clear(): void {
+      captured.length = 0;
+    },
+    find(predicate: (event: TelemetryEvent) => boolean): TelemetryEvent | undefined {
+      return captured.find(predicate);
+    },
+    filter(predicate: (event: TelemetryEvent) => boolean): TelemetryEvent[] {
+      return captured.filter(predicate);
+    },
+    latest(): TelemetryEvent | undefined {
+      return captured[captured.length - 1];
+    }
+  };
 }
 
 /** A cheap unique correlation id shared across the requests a single action fans out into. */
