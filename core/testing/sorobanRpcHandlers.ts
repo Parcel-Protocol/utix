@@ -17,7 +17,7 @@ import { SOROBAN_RPC_URLS } from "@/core/network/config";
 
 export interface SorobanRpcHandlerOptions {
   fixtures?: {
-    [methodName: string]: JsonRpcResponse<unknown>;
+    [methodName: string]: JsonRpcResponse<unknown> | string | unknown;
   };
 }
 
@@ -28,7 +28,7 @@ export interface SorobanRpcHandlerOptions {
 export function sorobanRpcHandlers(options: SorobanRpcHandlerOptions = {}): ReturnType<typeof http.post>[] {
   const { fixtures = {} } = options;
 
-  const defaultFixtures: Record<string, JsonRpcResponse<unknown>> = {
+  const defaultFixtures: Record<string, JsonRpcResponse<unknown> | string | unknown> = {
     simulateTransaction: {
       jsonrpc: "2.0",
       id: 1,
@@ -69,7 +69,7 @@ export function sorobanRpcHandlers(options: SorobanRpcHandlerOptions = {}): Retu
   return [
     http.post("*", async ({ request }) => {
       try {
-        const body = await request.json() as { method?: string };
+        const body = (await request.json()) as { method?: string; id?: number | string };
         const method = body.method;
 
         if (!method) {
@@ -90,9 +90,19 @@ export function sorobanRpcHandlers(options: SorobanRpcHandlerOptions = {}): Retu
           });
         }
 
+        if (typeof fixture === "string") {
+          return new HttpResponse(fixture, {
+            headers: { "content-type": "application/json" }
+          });
+        }
+
+        if (typeof fixture !== "object" || fixture === null) {
+          return HttpResponse.json(fixture as Parameters<typeof HttpResponse.json>[0]);
+        }
+
         return HttpResponse.json({
           ...fixture,
-          id: (body as Record<string, unknown>).id ?? fixture.id
+          id: body.id ?? (fixture as Record<string, unknown>).id
         });
       } catch {
         return HttpResponse.json({
@@ -111,13 +121,21 @@ export function sorobanRpcHandlers(options: SorobanRpcHandlerOptions = {}): Retu
  */
 export function sorobanRpcMethod<T>(
   method: string,
-  response: JsonRpcResponse<T>
+  response: JsonRpcResponse<T> | string | unknown
 ): ReturnType<typeof http.post> {
   return http.post(Object.values(SOROBAN_RPC_URLS)[0], async ({ request }) => {
     try {
-      const body = await request.json() as Record<string, unknown>;
+      const body = (await request.json()) as Record<string, unknown>;
       if (body.method === method) {
-        return HttpResponse.json({ ...response, id: body.id ?? response.id });
+        if (typeof response === "string") {
+          return new HttpResponse(response, {
+            headers: { "content-type": "application/json" }
+          });
+        }
+        if (typeof response !== "object" || response === null) {
+          return HttpResponse.json(response as Parameters<typeof HttpResponse.json>[0]);
+        }
+        return HttpResponse.json({ ...response, id: body.id ?? (response as Record<string, unknown>).id });
       }
     } catch {
       // Fall through

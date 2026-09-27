@@ -8,8 +8,6 @@ node_modules/
 out/
 build/
 
-# generated feature registry — rebuilt by scripts/generate-registry.mjs
-core/registry/*.generated.ts
 
 # typescript
 *.tsbuildinfo
