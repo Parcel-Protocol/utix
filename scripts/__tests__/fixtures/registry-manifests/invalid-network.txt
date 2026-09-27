@@ -1,0 +1,13 @@
+import { Wrench } from "lucide-react";
+import type { FeatureManifest } from "@/core/registry/types";
+export const manifest: FeatureManifest = {
+  slug: "invalid-network-slice",
+  title: "Invalid Network Slice",
+  description: "Declares a network the app cannot query.",
+  character: "Overreaching.",
+  category: "network",
+  status: "working",
+  icon: Wrench,
+  networks: ["testnet", "futurenet"],
+  keywords: ["network"]
+};

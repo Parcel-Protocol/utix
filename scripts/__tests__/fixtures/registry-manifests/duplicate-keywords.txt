@@ -1,0 +1,13 @@
+import { Wrench } from "lucide-react";
+import type { FeatureManifest } from "@/core/registry/types";
+export const manifest: FeatureManifest = {
+  slug: "duplicate-keywords-slice",
+  title: "Duplicate Keywords Slice",
+  description: "Repeats a keyword, which adds nothing to search filtering.",
+  character: "Repetitive.",
+  category: "assets",
+  status: "working",
+  icon: Wrench,
+  networks: [],
+  keywords: ["price", "Price", " price ", "lab"]
+};
