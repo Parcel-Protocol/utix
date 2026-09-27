@@ -48,14 +48,21 @@ export const MAX_REDACT_DEPTH = 16;
 export const MAX_SCANNABLE_STRING_LENGTH = 500_000;
 
 /** Embedded Stellar secret seed (56 characters starting with S or M). */
-const EMBEDDED_STELLAR_SECRET = /\b[SM][A-Z2-7]{55}\b/g;
+const EMBEDDED_STELLAR_SECRET = /[SM][A-Z2-7]{55}/g;
 
 /** Embedded bearer tokens / authorization headers. */
-const EMBEDDED_BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/-]+\b/gi;
+const EMBEDDED_BEARER_TOKEN = /Bearer\s+[A-Za-z0-9._~+/-]+/gi;
+
+export const STELLAR_PUBLIC_ADDRESS_REGEX = /[GC][A-Z2-7]{55}/g;
+
+export interface RedactOptions {
+  /** If true, redacts all Stellar public addresses (G... / C...) in values. */
+  redactAddresses?: boolean;
+}
 
 function isSensitiveKey(key: string): boolean {
   if (/public/i.test(key)) return false;
-  return /secret|seed|password|passphrase|token|auth|authorization|credential|bearer|cookie|(?:^|[_\b]|private|api|secret|signing)key/i.test(key);
+  return /secret|seed|password|passphrase|token|auth|authorization|credential|bearer|cookie|raw_?body|response_?body|request_?body|http_?body|response_?data|^(?:body|raw)$|disallowed_?address|forbidden_?address|disallowed_?account|forbidden_?account|(?:^|[_\b]|private|api|secret|signing)key/i.test(key);
 }
 
 function looksLikeSecret(value: string): boolean {
@@ -73,8 +80,8 @@ function scrubString(value: string): string {
       ? value.slice(0, MAX_SCANNABLE_STRING_LENGTH) + "…[TRUNCATED]"
       : value;
   return candidate
-    .replace(/\b[SM][A-Z2-7]{55}\b/g, "[REDACTED]")
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+\b/gi, "[REDACTED]");
+    .replace(/[SM][A-Z2-7]{55}/g, "[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+/gi, "[REDACTED]");
 }
 
 /**
@@ -89,10 +96,15 @@ function scrubString(value: string): string {
 export function redact(
   value: unknown,
   depth = 0,
-  seen: WeakSet<object> = new WeakSet<object>()
+  seen: WeakSet<object> = new WeakSet<object>(),
+  options?: RedactOptions
 ): unknown {
   if (typeof value === "string") {
-    return scrubString(value);
+    let scrubbed = scrubString(value);
+    if (options?.redactAddresses) {
+      scrubbed = scrubbed.replace(STELLAR_PUBLIC_ADDRESS_REGEX, "[REDACTED]");
+    }
+    return scrubbed;
   }
   if (value === null || value === undefined) return value;
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
@@ -113,7 +125,7 @@ export function redact(
     seen.add(value);
 
     if (Array.isArray(value)) {
-      return value.map((entry) => redact(entry, depth + 1, seen));
+      return value.map((entry) => redact(entry, depth + 1, seen, options));
     }
 
     if (value instanceof Error) {
@@ -131,7 +143,7 @@ export function redact(
     for (const [key, entry] of Object.entries(value)) {
       out[key] = isSensitiveKey(key)
         ? "[REDACTED]"
-        : redact(entry, depth + 1, seen);
+        : redact(entry, depth + 1, seen, options);
     }
     return out;
   }
@@ -241,7 +253,7 @@ export function emitTelemetry(fields: EmitTelemetryFields): void {
     result: fields.result ?? "success",
     latencyMs: fields.latencyMs ?? 0,
     correlationId: fields.correlationId ?? newCorrelationId(),
-    errorCode: fields.errorCode,
+    errorCode: fields.errorCode ? scrubString(fields.errorCode) : undefined,
     // Redaction happens here, at the boundary, so every sink — including an
     // in-memory test sink — only ever sees safe values.
     payload: typeof fields.payload === "object" && fields.payload !== null
