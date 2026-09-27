@@ -1,0 +1,14 @@
+import { Wrench } from "lucide-react";
+import type { FeatureManifest } from "@/core/registry/types";
+export const manifest: FeatureManifest = {
+  slug: "unsafe-link-slice",
+  title: "Unsafe Link Slice",
+  description: "Links to an insecure URL that navigation would follow.",
+  character: "Careless.",
+  category: "network",
+  status: "working",
+  icon: Wrench,
+  networks: [],
+  keywords: ["link"],
+  docs: "http://legacy.example.com/docs"
+};

@@ -36,6 +36,99 @@ const REQUIRED_MANIFEST_FIELDS = [
   "keywords"
 ];
 
+// Mirrors FeatureStatus in core/registry/types.ts. Duplicated rather than
+// imported because this script runs directly under node with no build step.
+const ALLOWED_STATUSES = ["working", "beta", "experimental"];
+
+// Mirrors STELLAR_NETWORKS in core/network/types.ts.
+const ALLOWED_NETWORKS = ["testnet", "mainnet"];
+
+/**
+ * Schemes a manifest must never carry. `http:` is included because an
+ * insecure link in navigation is a downgrade the author did not choose, and
+ * the script schemes are the ones that execute when a link is followed.
+ */
+const FORBIDDEN_LINK_SCHEMES = ["http:", "javascript:", "data:", "vbscript:", "file:"];
+
+function fieldError(slug, field, reason) {
+  return new Error(`[registry] features/${slug}/manifest.ts ${field}: ${reason}`);
+}
+
+function stringArrayField(source, field) {
+  const body = source.match(new RegExp(`${field}:\\s*\\[([^\\]]*)\\]`, "m"))?.[1];
+  if (body === undefined) return null;
+  return [...body.matchAll(/"([^"]*)"/g)].map((match) => match[1]);
+}
+
+/**
+ * Validate the *values* in a manifest, not just that the fields are present.
+ *
+ * Manifest metadata reaches navigation, search, the command palette and page
+ * headings, so a malformed entry has a wider blast radius than a single tool.
+ * A missing field throws on its own; a wrong value used to be written straight
+ * through into the generated registry and only failed later, somewhere else.
+ *
+ * Each rejection names the slice and the field, so the error points at the line
+ * to fix rather than at "the registry".
+ */
+export function validateManifestMetadata(slug, source) {
+  // status
+  const status = source.match(/status:\s*"([^"]*)"/)?.[1];
+  if (status !== undefined && !ALLOWED_STATUSES.includes(status)) {
+    throw fieldError(
+      slug,
+      "status",
+      `"${status}" is not a valid feature status. Expected one of: ${ALLOWED_STATUSES.join(", ")}.`
+    );
+  }
+
+  // networks
+  const networks = stringArrayField(source, "networks");
+  if (networks) {
+    for (const network of networks) {
+      if (!ALLOWED_NETWORKS.includes(network)) {
+        throw fieldError(
+          slug,
+          "networks",
+          `"${network}" is not a supported Stellar network. Expected one of: ${ALLOWED_NETWORKS.join(", ")}, or an empty array for an offline tool.`
+        );
+      }
+    }
+  }
+
+  // keywords
+  const keywords = stringArrayField(source, "keywords");
+  if (keywords) {
+    const seen = new Map();
+    for (const keyword of keywords) {
+      const normalized = keyword.trim().toLowerCase();
+      if (seen.has(normalized)) {
+        throw fieldError(
+          slug,
+          "keywords",
+          `duplicate keyword "${keyword}" (also declared as "${seen.get(normalized)}"). Keywords are used for search filtering, so a duplicate adds nothing.`
+        );
+      }
+      seen.set(normalized, keyword);
+    }
+  }
+
+  // external links
+  for (const literal of source.matchAll(/"([^"]*)"|'([^']*)'/g)) {
+    const value = literal[1] ?? literal[2] ?? "";
+    const scheme = value.match(/^([a-z][a-z0-9+.-]*:)/i)?.[1]?.toLowerCase();
+    if (scheme && FORBIDDEN_LINK_SCHEMES.includes(scheme)) {
+      throw fieldError(
+        slug,
+        "link",
+        `"${value}" uses the forbidden scheme "${scheme}". Use https:// for external links.`
+      );
+    }
+  }
+
+  return true;
+}
+
 function identifier(slug) {
   return slug.replace(/[^a-zA-Z0-9]+(.)?/g, (_, chr) => (chr ? chr.toUpperCase() : ""));
 }
@@ -122,6 +215,7 @@ async function validateFeatureDirectory(slug) {
   }
 
   assertManifestFields(slug, source);
+  validateManifestMetadata(slug, source);
 }
 
 async function discoverSlugs() {

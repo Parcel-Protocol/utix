@@ -441,6 +441,55 @@ export function createQuotaStore(options: QuotaOptions = {}): QuotaStore {
   const refunded = new Set<string>();
   let denials: QuotaDenialRecord[] = [];
 
+  /**
+   * Spends that have been decided but not yet written to storage.
+   *
+   * `consume` is a synchronous read-modify-write: read a counter, decide,
+   * write it. If anything re-enters `consume` between that read and that write
+   * — a wrapped `QuotaStorage`, a telemetry subscriber, an outer `withQuota`
+   * whose hook calls back in, a second store sharing the same storage — the
+   * inner spend is computed from a stale counter and the outer write then
+   * overwrites it. The limit is then exceeded while the counters say otherwise:
+   * two interleaved spends of one unit each record a single unit.
+   *
+   * Reserving before the first read closes that window without changing the
+   * synchronous API. A read folds in the reservations held for its key, so a
+   * re-entrant spend sees the outer one; the first call to commit a key writes
+   * the merged value and drops the entry, which is exactly the interleaving
+   * that used to lose an update.
+   *
+   * A denied spend subtracts its own reservation instead of dropping the entry,
+   * so a refusal never discards an outer call's pending spend.
+   *
+   * Scope: this covers interleaving *within one process*, which is what the
+   * injected storage can express. Two browser tabs still race on the same
+   * `localStorage` keys, and closing that needs a transactional store rather
+   * than a read-modify-write.
+   */
+  const reserved = new Map<string, Reservation>();
+
+  /**
+   * A decided-but-unwritten spend, plus which `evaluate` call owns each part of
+   * it. Ownership is what keeps the release of a *refused* spend from discarding
+   * a reservation an outer call still needs, and what lets an entry with no
+   * owner left be dropped rather than linger and overwrite a later write.
+   */
+  interface Reservation {
+    windowStart: number;
+    used: number;
+    denied: number;
+    /** evaluate() call id -> the cost that call reserved. */
+    owners: Map<number, number>;
+    /** Reserved cost not yet written to storage. */
+    unwritten: number;
+  }
+
+  let nextCallId = 0;
+
+  function reservedKey(operation: string, subject: string): string {
+    return `${operation}|${subject}`;
+  }
+
   const counterKey = (operation: string, subject: string) =>
     `${QUOTA_STORAGE_PREFIX}count:${operation}|${subject}`;
   const overrideKey = (operation: string, subject: string) =>
@@ -450,7 +499,7 @@ export function createQuotaStore(options: QuotaOptions = {}): QuotaStore {
     return Math.floor(at / policy.windowMs) * policy.windowMs;
   }
 
-  function readCounter(policy: QuotaPolicy, subject: string, at: number): Counter {
+  function readStoredCounter(policy: QuotaPolicy, subject: string, at: number): Counter {
     const windowStart = windowStartOf(policy, at);
     const raw = storage.getItem(counterKey(policy.operation, subject));
     if (raw) {
@@ -463,6 +512,122 @@ export function createQuotaStore(options: QuotaOptions = {}): QuotaStore {
       }
     }
     return { windowStart, used: 0, denied: 0 };
+  }
+
+  /**
+   * The counter for a subject, including spend that has been decided but not yet
+   * written. A copy is returned so a caller that adjusts a counter cannot edit
+   * the reservation itself.
+   */
+  function readCounter(policy: QuotaPolicy, subject: string, at: number): Counter {
+    const pending = reserved.get(reservedKey(policy.operation, subject));
+    const stored = readStoredCounter(policy, subject, at);
+    if (!pending || pending.windowStart !== windowStartOf(policy, at)) return stored;
+    return { windowStart: pending.windowStart, used: pending.used, denied: pending.denied };
+  }
+
+  function reservationFor(policy: QuotaPolicy, subject: string, at: number): Reservation | undefined {
+    const entry = reserved.get(reservedKey(policy.operation, subject));
+    return entry && entry.windowStart === windowStartOf(policy, at) ? entry : undefined;
+  }
+
+  /**
+   * Record a decided spend against a subject's counter, before any read, so a
+   * re-entrant call cannot compute its decision from a counter that does not
+   * include it.
+   */
+  function reserveCounter(
+    policy: QuotaPolicy,
+    subject: string,
+    cost: number,
+    at: number,
+    callId: number
+  ): void {
+    const key = reservedKey(policy.operation, subject);
+    let entry = reservationFor(policy, subject, at);
+    if (!entry) {
+      const base = readStoredCounter(policy, subject, at);
+      entry = {
+        windowStart: base.windowStart,
+        used: base.used,
+        denied: base.denied,
+        owners: new Map(),
+        unwritten: 0
+      };
+      reserved.set(key, entry);
+    }
+    entry.used += cost;
+    entry.unwritten += cost;
+    entry.owners.set(callId, cost);
+  }
+
+  /**
+   * Write the reserved spend for a subject to storage, once.
+   *
+   * The value written is the *merged* total, so a re-entrant call that commits
+   * first persists its own spend and the outer call's together. The outer
+   * call's later commit finds no entry — it is already on disk — and does
+   * nothing, which is what stops the second write from clobbering the first.
+   *
+   * It is safe for the first commit to include another call's share because a
+   * re-entrant call can only start from inside a `writeCounter`, and this store
+   * only writes after deciding to spend: a refusal releases its reservation
+   * before it writes, so a committed entry never contains a refused cost.
+   */
+  function commitCounter(
+    policy: QuotaPolicy,
+    subject: string,
+    cost: number,
+    at: number,
+    callId: number
+  ): void {
+    const key = reservedKey(policy.operation, subject);
+    const entry = reservationFor(policy, subject, at);
+    if (!entry || !entry.owners.has(callId)) return;
+    entry.owners.delete(callId);
+    entry.unwritten -= cost;
+
+    // The write is *additive* against what is on disk now, not a snapshot of
+    // what was read earlier, and each call adds its own cost exactly once. A
+    // re-entrant call that committed first has already added its share, so this
+    // still lands the right total — where writing the reserved absolute value
+    // would either double it or lose the other call's spend.
+    const current = readStoredCounter(policy, subject, at);
+    current.used += cost;
+    // A refusal counted while this reservation was live is on disk already, and
+    // a re-entrant write must not drop it.
+    current.denied = Math.max(current.denied, entry.denied);
+    writeCounter(policy.operation, subject, current);
+
+    // Nobody is counting on this entry any more: keeping it would let the next
+    // commit write a stale total over whatever landed in the meantime.
+    if (entry.unwritten <= 0) reserved.delete(key);
+  }
+
+  /**
+   * Give this call's reservation back, leaving any other call's share intact.
+   *
+   * When no owner is left the entry is dropped entirely: leaving it would let a
+   * later commit overwrite a counter written in between — which is how a denial
+   * count gets silently reset.
+   */
+  function releaseCounter(
+    policy: QuotaPolicy,
+    subject: string,
+    cost: number,
+    at: number,
+    callId: number
+  ): void {
+    const key = reservedKey(policy.operation, subject);
+    const entry = reservationFor(policy, subject, at);
+    if (!entry || !entry.owners.has(callId)) return;
+    entry.owners.delete(callId);
+    entry.used = Math.max(0, entry.used - cost);
+    entry.unwritten -= cost;
+    // With no owner left the entry is dropped: leaving it would let a later
+    // commit overwrite a counter written in between, which is how a denial count
+    // gets silently reset.
+    if (entry.unwritten <= 0) reserved.delete(key);
   }
 
   function writeCounter(operation: string, subject: string, counter: Counter): void {
@@ -526,27 +691,62 @@ export function createQuotaStore(options: QuotaOptions = {}): QuotaStore {
     }
     const { policy, cost } = valid.value;
     const at = now();
+
+    // Reserve first, then read. The reads below therefore see this spend, and so
+    // does anything that re-enters while it is in flight — the ordering is the
+    // whole point, so it must not move below the reads.
+    const callId = ++nextCallId;
+    if (spend) {
+      reserveCounter(policy, request.principal, cost, at, callId);
+      reserveCounter(policy, QUOTA_GLOBAL_SUBJECT, cost, at, callId);
+    }
+
     const own = readCounter(policy, request.principal, at);
     const shared = readCounter(policy, QUOTA_GLOBAL_SUBJECT, at);
     const ownLimit = effectiveLimit(policy, request.principal, at);
     const sharedLimit = effectiveLimit(policy, QUOTA_GLOBAL_SUBJECT, at);
     const resetAtMs = own.windowStart + policy.windowMs;
 
+    // A spending call already reserved its cost above, so `own.used` and
+    // `shared.used` include it and must be compared as they stand. A `check()`
+    // reserves nothing, so its cost is projected instead. Adding `cost` in both
+    // cases would count a spend twice and refuse a request that fits.
+    const projectedOwn = own.used + (spend ? 0 : cost);
+    const projectedShared = shared.used + (spend ? 0 : cost);
+
     // The principal's own counter is checked first: when both are full, the
     // user is told the limit is theirs, which is the more actionable message.
     const refusedBy: QuotaLimitScope | undefined =
-      own.used + cost > ownLimit.limit
+      projectedOwn > ownLimit.limit
         ? "principal"
-        : shared.used + cost > sharedLimit.limit
+        : projectedShared > sharedLimit.limit
           ? "global"
           : undefined;
 
     if (refusedBy) {
-      const counter = refusedBy === "principal" ? own : shared;
       const limit = refusedBy === "principal" ? ownLimit : sharedLimit;
+      // The refusing counter's window, taken from the read above: every counter
+      // in this window starts at the same instant, so this is the same value the
+      // stored counter would have carried, and it stays in scope for the
+      // retry-after computed after the write.
+      const refusingWindowStart = refusedBy === "principal" ? own.windowStart : shared.windowStart;
       if (spend) {
+        // This call's own reservation is not a spend: hand it back rather than
+        // writing a counter that includes the cost it just refused.
+        releaseCounter(policy, request.principal, cost, at, callId);
+        releaseCounter(policy, QUOTA_GLOBAL_SUBJECT, cost, at, callId);
+        // The refusal is recorded against the refusing subject. If a reservation
+        // for that subject is still live, the count goes onto it rather than
+        // straight to storage: the owner's commit writes that counter next, and
+        // a direct write would be overwritten by it.
+        const refusingSubject = refusedBy === "principal" ? request.principal : QUOTA_GLOBAL_SUBJECT;
+        const counter = readCounter(policy, refusingSubject, at);
         counter.denied += 1;
-        writeCounter(policy.operation, refusedBy === "principal" ? request.principal : QUOTA_GLOBAL_SUBJECT, counter);
+        const live = reservationFor(policy, refusingSubject, at);
+        if (live) live.denied = counter.denied;
+        const current = readStoredCounter(policy, refusingSubject, at);
+        current.denied = Math.max(current.denied, counter.denied);
+        writeCounter(policy.operation, refusingSubject, current);
         denials = [
           ...denials,
           {
@@ -555,6 +755,8 @@ export function createQuotaStore(options: QuotaOptions = {}): QuotaStore {
             principal: request.principal,
             limitScope: refusedBy,
             cost,
+            // What the counter held before the refused spend, which is what a
+            // maintainer needs to see: the spend did not happen.
             used: counter.used,
             limit: limit.limit,
             correlationId
@@ -584,16 +786,18 @@ export function createQuotaStore(options: QuotaOptions = {}): QuotaStore {
         operation: policy.operation,
         resource: policy.resource,
         limitScope: refusedBy,
-        retryAfterMs: blocked ? null : Math.max(0, counter.windowStart + policy.windowMs - at),
+        retryAfterMs: blocked ? null : Math.max(0, refusingWindowStart + policy.windowMs - at),
         correlationId
       });
     }
 
     if (spend) {
-      own.used += cost;
-      shared.used += cost;
-      writeCounter(policy.operation, request.principal, own);
-      writeCounter(policy.operation, QUOTA_GLOBAL_SUBJECT, shared);
+      // `own` and `shared` were read after the reservation, so they already
+      // include this cost; committing writes that reserved value rather than
+      // re-deriving it, which is what makes a re-entrant spend visible to the
+      // write that follows it.
+      commitCounter(policy, request.principal, cost, at, callId);
+      commitCounter(policy, QUOTA_GLOBAL_SUBJECT, cost, at, callId);
       emitTelemetry({
         op: "quota.consume",
         actorType: request.actorType ?? "user",
@@ -861,6 +1065,9 @@ export function createQuotaStore(options: QuotaOptions = {}): QuotaStore {
       touched.clear();
       overrideKeys.clear();
       refunded.clear();
+      // An in-flight reservation outliving a reset would keep counting a spend
+      // the reset was meant to discard.
+      reserved.clear();
       denials = [];
     }
   };
