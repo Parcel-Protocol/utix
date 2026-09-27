@@ -33,7 +33,7 @@
  * ```
  */
 
-import { describe, it, type RequestHandler } from "vitest";
+import { afterEach, beforeEach, describe, it, type RequestHandler } from "vitest";
 import { withMswHandlers } from "@/core/testing/msw";
 import type { StellarNetwork } from "@/core/network/types";
 import {
@@ -44,6 +44,12 @@ import {
   type NetworkProfileId,
 } from "@/core/testing/networkProfiles";
 import { networkProfileHandlers } from "@/core/testing/networkProfileHandlers";
+import {
+  createCaptureSink,
+  resetTelemetrySink,
+  setTelemetrySink,
+  type TelemetryCaptureSink
+} from "@/core/telemetry/telemetry";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -147,6 +153,16 @@ export function runAgainstNetworkProfiles(
 
     describe(`[${profile.id}] ${profile.label}`, () => {
       const server = withMswHandlers(...handlers);
+      const telemetry = createCaptureSink();
+
+      beforeEach(() => {
+        telemetry.clear();
+        setTelemetrySink(telemetry);
+      });
+
+      afterEach(() => {
+        resetTelemetrySink();
+      });
 
       // Provide profile context to the test factory
       testFactory({
@@ -154,6 +170,7 @@ export function runAgainstNetworkProfiles(
         fixtures,
         server,
         handlers,
+        telemetry,
       });
     });
   }

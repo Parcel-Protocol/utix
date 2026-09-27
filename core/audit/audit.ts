@@ -116,6 +116,8 @@ const AUDIT_MAX_VALUE_LENGTH = 160;
 
 /** A Stellar secret (seed) embedded in a longer string. */
 const EMBEDDED_SECRET = /\b[SM][A-Z2-7]{55}\b/g;
+const EMBEDDED_BEARER = /\bBearer\s+[A-Za-z0-9._~+/-]+\b/gi;
+const SENSITIVE_KEY_PATTERN = /secret|seed|key|token|password|passphrase|auth|credential|bearer|cookie/i;
 
 const REASON_PATTERN = /^[a-z0-9_.:-]{1,64}$/;
 
@@ -139,7 +141,9 @@ export interface AuditInput {
 }
 
 function scrubSecrets(value: string): string {
-  return value.replace(EMBEDDED_SECRET, "[REDACTED]");
+  return value
+    .replace(EMBEDDED_SECRET, "[REDACTED]")
+    .replace(EMBEDDED_BEARER, "[REDACTED]");
 }
 
 /**
@@ -153,6 +157,11 @@ export function auditContext(value: Record<string, unknown> | undefined): AuditC
   let keys = 0;
   for (const [key, entry] of Object.entries(value)) {
     if (keys >= AUDIT_MAX_CONTEXT_KEYS) break;
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      out[key] = "[REDACTED]";
+      keys += 1;
+      continue;
+    }
     if (entry === undefined || entry === null) {
       out[key] = null;
       keys += 1;

@@ -164,54 +164,37 @@ describe("network profile MSW handlers", () => {
 });
 
 describe("network profile filtering", () => {
-  it("filters by feature networks", () => {
-    const contexts: NetworkProfileContext[] = [];
-
+  describe("filters by feature networks", () => {
     runAgainstNetworkProfiles(
       { featureNetworks: ["testnet"] },
       (ctx) => {
-        contexts.push(ctx);
         it(`runs for ${ctx.profile.id}`, () => {
           expect(ctx.profile.network).toBe("testnet");
         });
       }
     );
-
-    // The helper creates describe blocks; we can't easily inspect them
-    // synchronously, but we can verify the function doesn't throw
-    expect(contexts).toBeDefined();
   });
 
-  it("includes futurenet only when requested", () => {
-    const contexts: NetworkProfileContext[] = [];
-
+  describe("includes futurenet only when requested", () => {
     runAgainstNetworkProfiles(
       { featureNetworks: ["testnet", "mainnet"], includeFuturenet: true },
       (ctx) => {
-        contexts.push(ctx);
         it(`runs for ${ctx.profile.id}`, () => {
           expect(ctx.profile).toBeDefined();
         });
       }
     );
-
-    expect(contexts).toBeDefined();
   });
 
-  it("filters by specific profile IDs", () => {
-    const contexts: NetworkProfileContext[] = [];
-
+  describe("filters by specific profile IDs", () => {
     runAgainstNetworkProfiles(
       { featureNetworks: ["testnet", "mainnet"], profileIds: ["testnet-fresh-account"] },
       (ctx) => {
-        contexts.push(ctx);
         it(`runs for ${ctx.profile.id}`, () => {
           expect(ctx.profile.id).toBe("testnet-fresh-account");
         });
       }
     );
-
-    expect(contexts).toBeDefined();
   });
 });
 
