@@ -92,12 +92,85 @@ export interface SubmitResult {
 export interface WorkerContext {
   correlationId: string;
   attempt: number;
+  /**
+   * Aborted when the framework is cancelled or shut down (#142).
+   *
+   * A handler that does long work should observe this and stop: the framework
+   * will not mark an abandoned attempt `succeeded`, and a stopped attempt is
+   * retried rather than lost. `signal.throwIfAborted()` is the one-line way to
+   * bail at the next checkpoint.
+   */
+  signal: AbortSignal;
 }
 
 export type JobHandler = (
   params: Record<string, unknown>,
   context: WorkerContext
 ) => void | Promise<void>;
+
+/** Raised by the framework's own abort path, and safe to rethrow from a handler. */
+export class WorkerCancelledError extends Error {
+  constructor(message = "Worker cancelled") {
+    super(message);
+    this.name = "WorkerCancelledError";
+  }
+}
+
+/**
+ * Whether a thrown value is one of the cancellation shapes this framework (or a
+ * caller reusing the same pattern) produces.
+ *
+ * Note that the framework itself decides cancellation by its own signal, not by
+ * this predicate: a handler that throws an `AbortError` from an unrelated
+ * timeout has not been cancelled by a shutdown and must still be reported as a
+ * failure. This is exported for handlers that catch our abort and rethrow, and
+ * for tests.
+ */
+export function isCancellation(error: unknown): boolean {
+  if (error instanceof WorkerCancelledError) return true;
+  if (typeof error !== "object" || error === null) return false;
+  const name = (error as { name?: unknown }).name;
+  // `AbortController#abort(reason)` and `signal.throwIfAborted()` both surface
+  // as a DOMException named "AbortError".
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+export type ShutdownPhase = "idle" | "cancelling" | "stopped";
+
+/** A job as it stood when shutdown was requested. */
+export interface PendingJobReport {
+  id: string;
+  operation: string;
+  status: JobStatus;
+  attempts: number;
+  maxAttempts: number;
+}
+
+export interface ShutdownOptions {
+  /** Recorded in the report and in telemetry. Defaults to "shutdown". */
+  reason?: string;
+}
+
+export interface ShutdownReport {
+  readonly reason: string;
+  readonly phase: ShutdownPhase;
+  /**
+   * Queued and retrying jobs. They were never started, so nothing was abandoned
+   * and the next process can pick them up unchanged.
+   */
+  readonly pending: readonly PendingJobReport[];
+  /**
+   * Jobs whose handler was in flight when the abort landed. Their side effect
+   * may be partial, which is why they are reported separately and moved to
+   * `retrying` rather than settled.
+   */
+  readonly interrupted: readonly PendingJobReport[];
+  /** Jobs that had already settled before the abort. Untouched. */
+  readonly settled: number;
+}
+
+/** How long `shutdown()` waits for in-flight handlers before giving up. */
+export const SHUTDOWN_DRAIN_TIMEOUT_MS = 5_000;
 
 export interface RetryPolicy {
   /** Base delay in ms; the nth retry waits `retryDelayMs * 2^(n - 1)`. */
@@ -114,7 +187,25 @@ export interface RunSummary {
   failed: number;
   retried: number;
   deadLettered: number;
+  /**
+   * Attempts abandoned because the framework was cancelled or shut down. Counted
+   * separately from `failed` because they are neither successes nor faults: the
+   * handler stopped early and the attempt is owed another run.
+   */
+  cancelled: number;
+  /** Jobs still running when the summary was produced (async handlers). */
+  inFlight: number;
 }
+
+const EMPTY_SUMMARY = (): RunSummary => ({
+  ran: 0,
+  succeeded: 0,
+  failed: 0,
+  retried: 0,
+  deadLettered: 0,
+  cancelled: 0,
+  inFlight: 0
+});
 
 const DEFAULT_POLICY: RetryPolicy = {
   retryDelayMs: 250,
@@ -136,6 +227,37 @@ export interface WorkerFramework {
   idempotency(): IdempotencyStore;
   /** Executes every due job once and returns the lifecycle summary. */
   drainDueJobs(now?: number): RunSummary;
+  /**
+   * Like `drainDueJobs`, but waits for async handlers to settle, so the summary
+   * is final rather than provisional (#142).
+   */
+  drain(now?: number): Promise<RunSummary>;
+  /**
+   * Cancel in-flight work and stop starting new work, then report what each job
+   * was doing when the abort landed (#142).
+   *
+   * The contract per state:
+   *   queued / retrying — never started, left exactly as they are and reported
+   *     as `pending`. Nothing was abandoned, so the next process re-runs them.
+   *   running           — the handler had started. Its side effect may be
+   *     partial, so the attempt is moved to `retrying` (or `dead_lettered` if
+   *     the budget is spent) and reported as `interrupted`. It is never marked
+   *     `succeeded`: an abandoned attempt that claims completion is exactly the
+   *     failure this exists to prevent.
+   *   succeeded / dead_lettered — settled before the abort, untouched.
+   *
+   * Waits up to `timeoutMs` for in-flight handlers; one that ignores its signal
+   * is left running and reported as interrupted.
+   */
+  shutdown(options?: ShutdownOptions & { timeoutMs?: number }): Promise<ShutdownReport>;
+  /** Abort without waiting — the signal flips immediately, drain is not awaited. */
+  cancel(reason?: string): void;
+  /** Current phase: `idle`, `cancelling` while draining, then `stopped`. */
+  phase(): ShutdownPhase;
+  /** The signal every handler's context carries. */
+  signal(): AbortSignal;
+  /** Jobs started but not yet settled. */
+  inFlight(): number;
   /** Idempotent reprocess of a single job by id. */
   processJob(id: string): RunSummary;
   /**
@@ -188,6 +310,16 @@ export function createWorkerFramework(
   const mergedPolicy: RetryPolicy = { ...DEFAULT_POLICY, ...policy };
   const registrations = new Map<string, { handler: JobHandler; retryDelayMs: number; maxAttempts: number }>();
   const jobs = new Map<string, JobPayload>();
+  /**
+   * Cancellation state (#142). One controller covers the whole framework, so a
+   * single `cancel()` reaches every handler that is in flight, and every job
+   * started afterwards sees an already-aborted signal.
+   */
+  let controller = new AbortController();
+  let shutdownPhase: ShutdownPhase = "idle";
+  let shutdownReason: string | null = null;
+  /** Handlers started and not yet settled. */
+  const inFlightSet = new Set<Promise<void>>();
   const idempotencyStore = createIdempotencyStore({ ttlMs: mergedPolicy.idempotencyTtlMs });
   const quotaStore = options.quota ?? createQuotaStore({ storage: createMemoryQuotaStorage() });
 
@@ -219,7 +351,15 @@ export function createWorkerFramework(
     return Date.parse(job.nextAttemptAt) <= now;
   }
 
-  function runJob(job: JobPayload): void {
+  /**
+   * Run one job to a settled or retryable state.
+   *
+   * Returns a promise when the handler is async, so callers can wait for a final
+   * outcome. The handler is *awaited* on purpose (#142): it used to be invoked
+   * and discarded, so an async handler was marked `succeeded` before it had done
+   * anything and its rejection escaped as an unhandled rejection.
+   */
+  function runJob(job: JobPayload): void | Promise<void> {
     job.attempts += 1;
     const registration = registrations.get(job.operation);
 
@@ -240,60 +380,148 @@ export function createWorkerFramework(
     }
 
     move(job, "start", "drained");
-    try {
-      registration.handler(job.params, {
-        correlationId: job.correlationId,
-        attempt: job.attempts
-      });
-      move(job, "succeed", "handler_returned");
-      job.lastError = undefined;
-      emitTelemetry({
-        op: "worker.run",
-        actorType: "worker",
-        result: "success",
-        correlationId: job.correlationId,
-        payload: { operation: job.operation, attempt: job.attempts }
-      });
-    } catch (error) {
-      const code = errorCodeOf(error);
-      job.lastError = {
-        code,
-        message: error instanceof Error ? error.message : "unknown failure"
-      };
 
-      // The job's own budget wins; the registration only supplies the default.
-      if (job.attempts >= job.maxAttempts) {
-        move(job, "exhaust", "attempts_exhausted");
+    const settle = (error?: unknown): void => {
+      // Cancellation wins over both outcomes, and it is decided *only* by our own
+      // signal. A handler that threw because the abort reached it has not failed,
+      // and one that returned after the abort has not succeeded: its side effect
+      // is unknown, so neither `succeed` nor the failure path may claim
+      // otherwise.
+      //
+      // Keying off the signal rather than the error's class matters: a handler
+      // with its own timeout throws a cancellation-shaped error for an unrelated
+      // reason, and that is a failure this framework should report, not a
+      // shutdown it did not initiate.
+      if (controller.signal.aborted) {
+        const cancelledError =
+          error === undefined
+            ? new WorkerCancelledError(
+                `Cancelled during ${job.operation}: ${shutdownReason ?? "shutdown"}`
+              )
+            : (error as Error);
+        job.lastError = {
+          code: "cancelled",
+          message: cancelledError instanceof Error ? cancelledError.message : "cancelled"
+        };
+        if (job.attempts >= job.maxAttempts) {
+          move(job, "exhaust", "cancelled_attempts_exhausted");
+        } else {
+          move(job, "fail", "cancelled");
+        }
         emitTelemetry({
-          op: "worker.exhausted",
+          op: "worker.cancelled",
           actorType: "worker",
           result: "failure",
           correlationId: job.correlationId,
-          errorCode: code,
-          payload: { operation: job.operation, attempts: job.attempts }
+          errorCode: "cancelled",
+          payload: {
+            operation: job.operation,
+            attempt: job.attempts,
+            reason: shutdownReason ?? "cancel"
+          }
         });
-      } else {
-        move(job, "fail", "handler_threw");
-        job.nextAttemptAt = new Date(
-          Date.now() + retryBackoff(registration.retryDelayMs, job.attempts)
-        ).toISOString();
+        return;
+      }
+
+      if (error === undefined) {
+        move(job, "succeed", "handler_returned");
+        job.lastError = undefined;
         emitTelemetry({
-          op: "worker.retry",
+          op: "worker.run",
           actorType: "worker",
-          result: "failure",
+          result: "success",
           correlationId: job.correlationId,
-          errorCode: code,
           payload: { operation: job.operation, attempt: job.attempts }
         });
+        return;
       }
+
+      handleFailure(job, registration, error);
+    };
+
+    const context: WorkerContext = {
+      correlationId: job.correlationId,
+      attempt: job.attempts,
+      signal: controller.signal
+    };
+
+    try {
+      const result = registration.handler(job.params, context);
+      if (result && typeof (result as Promise<void>).then === "function") {
+        const promise = (result as Promise<void>).then(
+          () => settle(),
+          (error: unknown) => settle(error)
+        );
+        inFlightSet.add(promise);
+        void promise.finally(() => inFlightSet.delete(promise));
+        return promise;
+      }
+      settle();
+    } catch (error) {
+      settle(error);
+    }
+  }
+
+  /** The failure path, shared by the sync and async routes. */
+  function handleFailure(
+    job: JobPayload,
+    registration: { retryDelayMs: number },
+    error: unknown
+  ): void {
+    const code = errorCodeOf(error);
+    job.lastError = {
+      code,
+      message: error instanceof Error ? error.message : "unknown failure"
+    };
+
+    // The job's own budget wins; the registration only supplies the default.
+    if (job.attempts >= job.maxAttempts) {
+      move(job, "exhaust", "attempts_exhausted");
+      emitTelemetry({
+        op: "worker.exhausted",
+        actorType: "worker",
+        result: "failure",
+        correlationId: job.correlationId,
+        errorCode: code,
+        payload: { operation: job.operation, attempts: job.attempts }
+      });
+    } else {
+      move(job, "fail", "handler_threw");
+      job.nextAttemptAt = new Date(
+        Date.now() + retryBackoff(registration.retryDelayMs, job.attempts)
+      ).toISOString();
+      emitTelemetry({
+        op: "worker.retry",
+        actorType: "worker",
+        result: "failure",
+        correlationId: job.correlationId,
+        errorCode: code,
+        payload: { operation: job.operation, attempt: job.attempts }
+      });
     }
   }
 
   function bumpSummary(summary: RunSummary, job: JobPayload): void {
-    if (job.status === "succeeded") summary.succeeded += 1;
+    // A cancelled attempt ends in `retrying` like any other non-terminal state,
+    // so it is counted from `lastError.code` rather than from the status: it is
+    // not a fault, and reporting it as one is what made cancellation look like a
+    // broken worker.
+    if (job.lastError?.code === "cancelled") summary.cancelled += 1;
+    else if (job.status === "succeeded") summary.succeeded += 1;
     else if (job.status === "retrying") summary.retried += 1;
     else if (job.status === "dead_lettered") summary.deadLettered += 1;
     else summary.failed += 1;
+  }
+
+  /** Snapshot of one job for the shutdown report. */
+  function reportJob(job: JobPayload): PendingJobReport {
+    return {
+      id: job.id,
+      operation: job.operation,
+      status: job.status,
+      attempts: job.attempts,
+      maxAttempts: job.maxAttempts
+    };
   }
 
   // Named so `submit()` can reach the public enqueue without re-entering the
@@ -395,28 +623,169 @@ export function createWorkerFramework(
     },
 
     drainDueJobs(now = Date.now()): RunSummary {
-      const summary: RunSummary = { ran: 0, succeeded: 0, failed: 0, retried: 0, deadLettered: 0 };
+      const summary = EMPTY_SUMMARY();
+      // Once cancelling, no *new* work starts (#142). Work already in flight
+      // still settles; only the queue is frozen.
+      if (shutdownPhase !== "idle") {
+        summary.inFlight = inFlightSet.size;
+        return summary;
+      }
+
       const due = [...jobs.values()].filter((job) => isDue(job, now));
 
       for (const job of due) {
         summary.ran += 1;
-        runJob(job);
+        const settled = runJob(job);
+        // An async handler has not finished yet, so its outcome is counted when
+        // it settles; the provisional summary reports it as in flight.
+        if (settled) continue;
         bumpSummary(summary, job);
       }
+
+      summary.inFlight = inFlightSet.size;
       return summary;
     },
 
+    async drain(now = Date.now()): Promise<RunSummary> {
+      const summary = EMPTY_SUMMARY();
+      if (shutdownPhase !== "idle") {
+        summary.inFlight = inFlightSet.size;
+        return summary;
+      }
+
+      const due = [...jobs.values()].filter((job) => isDue(job, now));
+
+      // Jobs an earlier synchronous drain left running. This call waits for them
+      // below, so they belong in the summary it returns — otherwise a caller who
+      // drained and then awaited would see the work complete and a summary that
+      // never mentions it.
+      const inherited = [...jobs.values()].filter((job) => job.status === "running");
+      const counted = new Set<string>();
+
+      for (const job of due) {
+        summary.ran += 1;
+        counted.add(job.id);
+        const settled = runJob(job);
+        if (!settled) bumpSummary(summary, job);
+      }
+
+      // Await every handler still running, not only the ones this call started.
+      await Promise.all([...inFlightSet]);
+
+      for (const job of due) bumpSummary(summary, job);
+      for (const job of inherited) {
+        if (counted.has(job.id)) continue;
+        counted.add(job.id);
+        summary.ran += 1;
+        bumpSummary(summary, job);
+      }
+      summary.inFlight = inFlightSet.size;
+      return summary;
+    },
+
+    cancel(reason = "cancel"): void {
+      if (shutdownPhase !== "idle") return;
+      shutdownReason = reason;
+      shutdownPhase = "cancelling";
+      controller.abort(new WorkerCancelledError(`Worker cancelled: ${reason}`));
+    },
+
+    async shutdown(options = {}): Promise<ShutdownReport> {
+      const reason = options.reason ?? "shutdown";
+      const timeoutMs = options.timeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_MS;
+
+      // What each job was doing *when the abort landed*, captured before the
+      // drain. Classifying afterwards would miss a handler that ignores its
+      // signal and never settles: it is still `running`, its side effect is
+      // unknown, and it is exactly the job the caller most needs told about.
+      const atAbort = new Map<string, JobStatus>(
+        [...jobs.values()].map((job) => [job.id, job.status])
+      );
+
+      framework.cancel(reason);
+
+      // Give in-flight handlers a chance to observe the signal and stop. One
+      // that ignores it is left running; the report below says so, because a
+      // job whose side effect is still in progress is precisely what a caller
+      // needs to know about at shutdown.
+      if (inFlightSet.size > 0) {
+        await Promise.race([
+          Promise.allSettled([...inFlightSet]),
+          new Promise((resolve) => setTimeout(resolve, timeoutMs))
+        ]);
+      }
+
+      shutdownPhase = "stopped";
+
+      const pending: PendingJobReport[] = [];
+      const interrupted: PendingJobReport[] = [];
+      let settledCount = 0;
+
+      for (const job of jobs.values()) {
+        const statusAtAbort = atAbort.get(job.id) ?? job.status;
+        if (statusAtAbort === "succeeded" || statusAtAbort === "dead_lettered") {
+          settledCount += 1;
+        } else if (statusAtAbort === "running" || job.lastError?.code === "cancelled") {
+          // Was running, or settled as cancelled while we waited. Either way the
+          // attempt was abandoned and is owed another run.
+          interrupted.push(reportJob(job));
+        } else {
+          // Queued or retrying: never started, so nothing was abandoned.
+          pending.push(reportJob(job));
+        }
+      }
+
+      emitTelemetry({
+        op: "worker.shutdown",
+        actorType: "worker",
+        result: "success",
+        payload: {
+          reason,
+          pending: pending.length,
+          interrupted: interrupted.length,
+          settled: settledCount
+        }
+      });
+
+      return {
+        reason,
+        phase: shutdownPhase,
+        pending,
+        interrupted,
+        settled: settledCount
+      };
+    },
+
+    phase(): ShutdownPhase {
+      return shutdownPhase;
+    },
+
+    signal(): AbortSignal {
+      return controller.signal;
+    },
+
+    inFlight(): number {
+      return inFlightSet.size;
+    },
+
     processJob(id: string): RunSummary {
-      const summary: RunSummary = { ran: 0, succeeded: 0, failed: 0, retried: 0, deadLettered: 0 };
+      const summary = EMPTY_SUMMARY();
       const job = jobs.get(id);
       if (!job) return summary;
       // Idempotent reprocessing: a terminal job has no legal `start` event, so
       // it is left untouched instead of running its handler a second time.
       if (workerJobMachine.isTerminal(job.status)) return summary;
+      // Reprocessing is starting new work, so it is refused while cancelling
+      // for the same reason a drain is.
+      if (shutdownPhase !== "idle") {
+        summary.inFlight = inFlightSet.size;
+        return summary;
+      }
 
       summary.ran += 1;
-      runJob(job);
-      bumpSummary(summary, job);
+      const settled = runJob(job);
+      if (!settled) bumpSummary(summary, job);
+      summary.inFlight = inFlightSet.size;
       return summary;
     },
 
@@ -454,6 +823,12 @@ export function createWorkerFramework(
     reset(): void {
       jobs.clear();
       registrations.clear();
+      inFlightSet.clear();
+      // A reset framework accepts work again: a fresh controller replaces the
+      // aborted one, and the phase returns to idle, so the next drain runs.
+      shutdownPhase = "idle";
+      shutdownReason = null;
+      controller = new AbortController();
       idempotencyStore.reset();
       // A shared quota store belongs to the caller; only an owned one is cleared.
       if (!options.quota) quotaStore.reset();
