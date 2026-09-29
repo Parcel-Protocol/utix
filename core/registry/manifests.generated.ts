@@ -17,7 +17,9 @@ import { manifest as balanceViewer } from "@/features/balance-viewer/manifest";
 import { manifest as batchAddressValidator } from "@/features/batch-address-validator/manifest";
 import { manifest as claimableBalances } from "@/features/claimable-balances/manifest";
 import { manifest as claimablePredicateBuilder } from "@/features/claimable-predicate-builder/manifest";
+import { manifest as contractEvents } from "@/features/contract-events/manifest";
 import { manifest as effectsTimeline } from "@/features/effects-timeline/manifest";
+import { manifest as explorerLinks } from "@/features/explorer-links/manifest";
 import { manifest as federationResolver } from "@/features/federation-resolver/manifest";
 import { manifest as feeBumpInspector } from "@/features/fee-bump-inspector/manifest";
 import { manifest as feeStats } from "@/features/fee-stats/manifest";
@@ -35,9 +37,12 @@ import { manifest as networkComparison } from "@/features/network-comparison/man
 import { manifest as operationBrowser } from "@/features/operation-browser/manifest";
 import { manifest as operationSourceMap } from "@/features/operation-source-map/manifest";
 import { manifest as orderbookViewer } from "@/features/orderbook-viewer/manifest";
+import { manifest as pathPaymentFinder } from "@/features/path-payment-finder/manifest";
 import { manifest as pathPaymentInspector } from "@/features/path-payment-inspector/manifest";
 import { manifest as paymentCsvPreflight } from "@/features/payment-csv-preflight/manifest";
+import { manifest as paymentHistory } from "@/features/payment-history/manifest";
 import { manifest as paymentQr } from "@/features/payment-qr/manifest";
+import { manifest as paymentUriParser } from "@/features/payment-uri-parser/manifest";
 import { manifest as preconditionsExplainer } from "@/features/preconditions-explainer/manifest";
 import { manifest as priceFractionLab } from "@/features/price-fraction-lab/manifest";
 import { manifest as reserveCalculator } from "@/features/reserve-calculator/manifest";
@@ -47,7 +52,10 @@ import { manifest as sep7SignatureVerifier } from "@/features/sep7-signature-ver
 import { manifest as sequenceInspector } from "@/features/sequence-inspector/manifest";
 import { manifest as signatureVerifier } from "@/features/signature-verifier/manifest";
 import { manifest as simulationExplainer } from "@/features/simulation-explainer/manifest";
+import { manifest as sorobanAuthInspector } from "@/features/soroban-auth-inspector/manifest";
 import { manifest as sorobanDecoder } from "@/features/soroban-decoder/manifest";
+import { manifest as sorobanFeeEstimator } from "@/features/soroban-fee-estimator/manifest";
+import { manifest as sorobanSpecViewer } from "@/features/soroban-spec-viewer/manifest";
 import { manifest as sponsoredReserves } from "@/features/sponsored-reserves/manifest";
 import { manifest as strkeyInspector } from "@/features/strkey-inspector/manifest";
 import { manifest as testnetFaucet } from "@/features/testnet-faucet/manifest";
@@ -79,7 +87,9 @@ export const generatedManifests: FeatureManifest[] = [
   batchAddressValidator,
   claimableBalances,
   claimablePredicateBuilder,
+  contractEvents,
   effectsTimeline,
+  explorerLinks,
   federationResolver,
   feeBumpInspector,
   feeStats,
@@ -97,9 +107,12 @@ export const generatedManifests: FeatureManifest[] = [
   operationBrowser,
   operationSourceMap,
   orderbookViewer,
+  pathPaymentFinder,
   pathPaymentInspector,
   paymentCsvPreflight,
+  paymentHistory,
   paymentQr,
+  paymentUriParser,
   preconditionsExplainer,
   priceFractionLab,
   reserveCalculator,
@@ -109,7 +122,10 @@ export const generatedManifests: FeatureManifest[] = [
   sequenceInspector,
   signatureVerifier,
   simulationExplainer,
+  sorobanAuthInspector,
   sorobanDecoder,
+  sorobanFeeEstimator,
+  sorobanSpecViewer,
   sponsoredReserves,
   strkeyInspector,
   testnetFaucet,
