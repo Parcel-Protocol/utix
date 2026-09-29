@@ -29,6 +29,7 @@ export function useAsyncStatusAnnouncer(options: UseAsyncStatusAnnouncerOptions 
   } | null>(null);
 
   const timeoutRef = useRef<NodeJS.Timeout>();
+  const lastAnnouncementKeyRef = useRef<string | null>(null);
 
   const announce = useCallback((event: AsyncStatusEvent) => {
     if (timeoutRef.current) {
