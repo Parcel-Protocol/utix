@@ -18,7 +18,9 @@ import { manifest as balanceViewer } from "@/features/balance-viewer/manifest";
 import { manifest as batchAddressValidator } from "@/features/batch-address-validator/manifest";
 import { manifest as claimableBalances } from "@/features/claimable-balances/manifest";
 import { manifest as claimablePredicateBuilder } from "@/features/claimable-predicate-builder/manifest";
+import { manifest as contractEvents } from "@/features/contract-events/manifest";
 import { manifest as effectsTimeline } from "@/features/effects-timeline/manifest";
+import { manifest as explorerLinks } from "@/features/explorer-links/manifest";
 import { manifest as federationResolver } from "@/features/federation-resolver/manifest";
 import { manifest as feeBumpInspector } from "@/features/fee-bump-inspector/manifest";
 import { manifest as feeStats } from "@/features/fee-stats/manifest";
@@ -36,9 +38,12 @@ import { manifest as networkComparison } from "@/features/network-comparison/man
 import { manifest as operationBrowser } from "@/features/operation-browser/manifest";
 import { manifest as operationSourceMap } from "@/features/operation-source-map/manifest";
 import { manifest as orderbookViewer } from "@/features/orderbook-viewer/manifest";
+import { manifest as pathPaymentFinder } from "@/features/path-payment-finder/manifest";
 import { manifest as pathPaymentInspector } from "@/features/path-payment-inspector/manifest";
 import { manifest as paymentCsvPreflight } from "@/features/payment-csv-preflight/manifest";
+import { manifest as paymentHistory } from "@/features/payment-history/manifest";
 import { manifest as paymentQr } from "@/features/payment-qr/manifest";
+import { manifest as paymentUriParser } from "@/features/payment-uri-parser/manifest";
 import { manifest as preconditionsExplainer } from "@/features/preconditions-explainer/manifest";
 import { manifest as priceFractionLab } from "@/features/price-fraction-lab/manifest";
 import { manifest as reserveCalculator } from "@/features/reserve-calculator/manifest";
@@ -48,7 +53,10 @@ import { manifest as sep7SignatureVerifier } from "@/features/sep7-signature-ver
 import { manifest as sequenceInspector } from "@/features/sequence-inspector/manifest";
 import { manifest as signatureVerifier } from "@/features/signature-verifier/manifest";
 import { manifest as simulationExplainer } from "@/features/simulation-explainer/manifest";
+import { manifest as sorobanAuthInspector } from "@/features/soroban-auth-inspector/manifest";
 import { manifest as sorobanDecoder } from "@/features/soroban-decoder/manifest";
+import { manifest as sorobanFeeEstimator } from "@/features/soroban-fee-estimator/manifest";
+import { manifest as sorobanSpecViewer } from "@/features/soroban-spec-viewer/manifest";
 import { manifest as sponsoredReserves } from "@/features/sponsored-reserves/manifest";
 import { manifest as strkeyInspector } from "@/features/strkey-inspector/manifest";
 import { manifest as testnetFaucet } from "@/features/testnet-faucet/manifest";
@@ -80,7 +88,9 @@ export const generatedFeatures: FeatureEntry[] = [
   { manifest: batchAddressValidator, load: async () => { const mod = await import("@/features/batch-address-validator/panel"); return mod.default as ComponentType; } },
   { manifest: claimableBalances, load: async () => { const mod = await import("@/features/claimable-balances/panel"); return mod.default as ComponentType; } },
   { manifest: claimablePredicateBuilder, load: async () => { const mod = await import("@/features/claimable-predicate-builder/panel"); return mod.default as ComponentType; } },
+  { manifest: contractEvents, load: async () => { const mod = await import("@/features/contract-events/panel"); return mod.default as ComponentType; } },
   { manifest: effectsTimeline, load: async () => { const mod = await import("@/features/effects-timeline/panel"); return mod.default as ComponentType; } },
+  { manifest: explorerLinks, load: async () => { const mod = await import("@/features/explorer-links/panel"); return mod.default as ComponentType; } },
   { manifest: federationResolver, load: async () => { const mod = await import("@/features/federation-resolver/panel"); return mod.default as ComponentType; } },
   { manifest: feeBumpInspector, load: async () => { const mod = await import("@/features/fee-bump-inspector/panel"); return mod.default as ComponentType; } },
   { manifest: feeStats, load: async () => { const mod = await import("@/features/fee-stats/panel"); return mod.default as ComponentType; } },
@@ -98,9 +108,12 @@ export const generatedFeatures: FeatureEntry[] = [
   { manifest: operationBrowser, load: async () => { const mod = await import("@/features/operation-browser/panel"); return mod.default as ComponentType; } },
   { manifest: operationSourceMap, load: async () => { const mod = await import("@/features/operation-source-map/panel"); return mod.default as ComponentType; } },
   { manifest: orderbookViewer, load: async () => { const mod = await import("@/features/orderbook-viewer/panel"); return mod.default as ComponentType; } },
+  { manifest: pathPaymentFinder, load: async () => { const mod = await import("@/features/path-payment-finder/panel"); return mod.default as ComponentType; } },
   { manifest: pathPaymentInspector, load: async () => { const mod = await import("@/features/path-payment-inspector/panel"); return mod.default as ComponentType; } },
   { manifest: paymentCsvPreflight, load: async () => { const mod = await import("@/features/payment-csv-preflight/panel"); return mod.default as ComponentType; } },
+  { manifest: paymentHistory, load: async () => { const mod = await import("@/features/payment-history/panel"); return mod.default as ComponentType; } },
   { manifest: paymentQr, load: async () => { const mod = await import("@/features/payment-qr/panel"); return mod.default as ComponentType; } },
+  { manifest: paymentUriParser, load: async () => { const mod = await import("@/features/payment-uri-parser/panel"); return mod.default as ComponentType; } },
   { manifest: preconditionsExplainer, load: async () => { const mod = await import("@/features/preconditions-explainer/panel"); return mod.default as ComponentType; } },
   { manifest: priceFractionLab, load: async () => { const mod = await import("@/features/price-fraction-lab/panel"); return mod.default as ComponentType; } },
   { manifest: reserveCalculator, load: async () => { const mod = await import("@/features/reserve-calculator/panel"); return mod.default as ComponentType; } },
@@ -110,7 +123,10 @@ export const generatedFeatures: FeatureEntry[] = [
   { manifest: sequenceInspector, load: async () => { const mod = await import("@/features/sequence-inspector/panel"); return mod.default as ComponentType; } },
   { manifest: signatureVerifier, load: async () => { const mod = await import("@/features/signature-verifier/panel"); return mod.default as ComponentType; } },
   { manifest: simulationExplainer, load: async () => { const mod = await import("@/features/simulation-explainer/panel"); return mod.default as ComponentType; } },
+  { manifest: sorobanAuthInspector, load: async () => { const mod = await import("@/features/soroban-auth-inspector/panel"); return mod.default as ComponentType; } },
   { manifest: sorobanDecoder, load: async () => { const mod = await import("@/features/soroban-decoder/panel"); return mod.default as ComponentType; } },
+  { manifest: sorobanFeeEstimator, load: async () => { const mod = await import("@/features/soroban-fee-estimator/panel"); return mod.default as ComponentType; } },
+  { manifest: sorobanSpecViewer, load: async () => { const mod = await import("@/features/soroban-spec-viewer/panel"); return mod.default as ComponentType; } },
   { manifest: sponsoredReserves, load: async () => { const mod = await import("@/features/sponsored-reserves/panel"); return mod.default as ComponentType; } },
   { manifest: strkeyInspector, load: async () => { const mod = await import("@/features/strkey-inspector/panel"); return mod.default as ComponentType; } },
   { manifest: testnetFaucet, load: async () => { const mod = await import("@/features/testnet-faucet/panel"); return mod.default as ComponentType; } },
