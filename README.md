@@ -28,6 +28,9 @@ Infrastructure docs: [Telemetry](./docs/TELEMETRY.md) ·
 [Reconciliation](./docs/RECONCILIATION.md) ·
 [Audit trail](./docs/AUDIT.md) ·
 [Tamper-evident ledger](./docs/LEDGER.md) ·
+[Backfill](./docs/BACKFILL.md) ·
+[Concurrency](./docs/CONCURRENCY.md) ·
+[Rejection explanations](./docs/REJECTION_EXPLANATIONS.md) ·
 [API Contract](./docs/API_CONTRACT.md).
 
 ## Tools
