@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  createCaptureSink,
+  resetTelemetrySink,
+  setTelemetrySink
+} from "@/core/telemetry/telemetry";
+import {
   sorobanRpc,
   parseJsonRpcResponse,
   isRpcFailure,
@@ -162,10 +167,13 @@ describe("core/rpc/client", () => {
 
     afterEach(() => {
       globalThis.fetch = originalFetch;
+      resetTelemetrySink();
     });
 
-    it("uses a caller correlation id for the JSON-RPC request and response", async () => {
+    it("uses the caller correlation id for the RPC request and success telemetry", async () => {
       const correlationId = "worker-job-123";
+      const telemetry = createCaptureSink();
+      setTelemetrySink(telemetry);
       globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
         const body = JSON.parse(init?.body as string);
         return {
@@ -185,6 +193,29 @@ describe("core/rpc/client", () => {
         .toBe(correlationId);
       expect(response.id).toBe(correlationId);
       expect(isRpcFailure(response)).toBe(false);
+      expect(telemetry.events).toMatchObject([{
+        op: "soroban.rpc",
+        result: "success",
+        correlationId,
+        payload: { method: "getHealth" }
+      }]);
+    });
+
+    it("emits transport failures with the same caller correlation id", async () => {
+      const correlationId = "worker-job-retry";
+      const telemetry = createCaptureSink();
+      setTelemetrySink(telemetry);
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error("Connection refused"));
+
+      const response = await sorobanRpc("getHealth", {}, { correlationId });
+
+      expect(isRpcFailure(response)).toBe(true);
+      expect(telemetry.events).toMatchObject([{
+        op: "soroban.rpc",
+        result: "failure",
+        correlationId,
+        errorCode: String(RPC_STANDARD_CODES.INTERNAL_ERROR)
+      }]);
     });
 
     it("safely handles malformed non-object JSON response without throwing", async () => {
