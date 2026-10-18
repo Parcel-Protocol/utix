@@ -164,6 +164,29 @@ describe("core/rpc/client", () => {
       globalThis.fetch = originalFetch;
     });
 
+    it("uses a caller correlation id for the JSON-RPC request and response", async () => {
+      const correlationId = "worker-job-123";
+      globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
+        const body = JSON.parse(init?.body as string);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ jsonrpc: "2.0", id: body.id, result: { status: "healthy" } })
+        } as unknown as Response;
+      });
+
+      const response = await sorobanRpc<{ status: string }>(
+        "getHealth",
+        {},
+        { correlationId }
+      );
+
+      expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string).id)
+        .toBe(correlationId);
+      expect(response.id).toBe(correlationId);
+      expect(isRpcFailure(response)).toBe(false);
+    });
+
     it("safely handles malformed non-object JSON response without throwing", async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
