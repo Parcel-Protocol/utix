@@ -65,11 +65,53 @@ const source = {
 };
 ```
 
+## Historical trend export
+
+`core/export/trends.ts` exports how operations, failures and volume move over
+time. It buckets raw events into UTC windows (`hour`, `day`, or `week`
+starting Monday) and generates the result through `exportRecords`, so a trend
+export has the same envelope: `schemaVersion`, `generatedAt`, `expiresAt`,
+`generator`, pagination, the `export.generate` quota, optional idempotency and
+an audit entry for every attempt, including denied ones.
+
+```ts
+import { exportTrends } from "@/core/export/trends";
+
+const result = exportTrends(
+  {
+    window: "day",
+    from: "2026-10-01T00:00:00.000Z", // inclusive
+    to: "2026-10-08T00:00:00.000Z", // exclusive
+    actor: { kind: "maintainer" },
+    pageSize: 500
+  },
+  events // TrendEvent[]: { at, op, result, amountStroops? }
+);
+```
+
+Each row (record type `metric_trend`, one per window and operation) holds
+`windowStart`, `windowEnd`, `op`, `total`, `successes`, `failures`,
+`failureRate` and `volumeStroops`. Volume sums `amountStroops` over successful
+events only and is a decimal string, so large totals stay exact.
+
+- **Sensitive dimensions** are not exportable. Aggregation reads only `at`,
+  `op`, `result` and `amountStroops`, so accounts, addresses, sessions and IPs
+  on an event cannot reach a row. Trends are maintainer scope: any other actor
+  gets `export_denied`.
+- **Bad input fails loudly.** An unknown window, an empty or reversed range,
+  more than `TREND_MAX_WINDOWS` (1 000) windows, or an unreadable event
+  returns `trend_invalid_window`, `trend_invalid_range`,
+  `trend_range_too_large` or `trend_invalid_event` instead of under-counting.
+- **Rows are deterministic**: sorted by window then operation, independent of
+  event order and of the host time zone.
+
 ## Testing
 
 `npm run test` covers large exports (5 000 records, paged without loss), empty
 exports, denied (`export_denied`) and unsupported-version exports, redaction,
-and retention expiry — see `core/export/__tests__/exporter.test.ts`.
+and retention expiry — see `core/export/__tests__/exporter.test.ts`. Trend
+aggregation, date ranges, empty data, permission denial and a 5 000 event
+paged export are covered in `core/export/__tests__/trends.test.ts`.
 
 Each export emits `export.generate` and `export.authorize` telemetry; see
 [docs/TELEMETRY.md](./TELEMETRY.md).
