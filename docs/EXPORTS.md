@@ -65,45 +65,34 @@ const source = {
 };
 ```
 
-## Historical trend export
+## Streaming large exports
 
-`core/export/trends.ts` exports how operations, failures and volume move over
-time. It buckets raw events into UTC windows (`hour`, `day`, or `week`
-starting Monday) and generates the result through `exportRecords`, so a trend
-export has the same envelope: `schemaVersion`, `generatedAt`, `expiresAt`,
-`generator`, pagination, the `export.generate` quota, optional idempotency and
-an audit entry for every attempt, including denied ones.
+`streamExportRecords(request, sources, { chunkSize, signal })` applies the same
+authorization, schema, strict-field, quota, field-level filtering and redaction
+rules as `exportRecords`, but pulls records lazily and yields bounded chunks, so
+memory stays at one chunk (default 500 records) regardless of dataset size.
 
 ```ts
-import { exportTrends } from "@/core/export/trends";
-
-const result = exportTrends(
-  {
-    window: "day",
-    from: "2026-10-01T00:00:00.000Z", // inclusive
-    to: "2026-10-08T00:00:00.000Z", // exclusive
-    actor: { kind: "maintainer" },
-    pageSize: 500
-  },
-  events // TrendEvent[]: { at, op, result, amountStroops? }
-);
+const stream = streamExportRecords(request, sources, { chunkSize: 500, signal });
+if (!stream.ok) return stream; // refused before any record is read
+for (const chunk of stream.value) send(chunk.records);
 ```
 
-Each row (record type `metric_trend`, one per window and operation) holds
-`windowStart`, `windowEnd`, `op`, `total`, `successes`, `failures`,
-`failureRate` and `volumeStroops`. Volume sums `amountStroops` over successful
-events only and is a decimal string, so large totals stay exact.
+A source may add `stream: () => Iterable<ExportRecord>` so the data is never
+materialised; without it the stream falls back to `collect`.
 
-- **Sensitive dimensions** are not exportable. Aggregation reads only `at`,
-  `op`, `result` and `amountStroops`, so accounts, addresses, sessions and IPs
-  on an event cannot reach a row. Trends are maintainer scope: any other actor
-  gets `export_denied`.
-- **Bad input fails loudly.** An unknown window, an empty or reversed range,
-  more than `TREND_MAX_WINDOWS` (1 000) windows, or an unreadable event
-  returns `trend_invalid_window`, `trend_invalid_range`,
-  `trend_range_too_large` or `trend_invalid_event` instead of under-counting.
-- **Rows are deterministic**: sorted by window then operation, independent of
-  event order and of the host time zone.
+- **Cancellation.** Abort the `signal`, or stop iterating (`break` / `return()`).
+  No further record is pulled, the unfinished buffer is dropped and the
+  source iterator is closed. The generator returns
+  `{ status: "cancelled", recordCount, ... }` counting only chunks already
+  handed out.
+- **Audit.** One `export.generated` event is written when the stream ends,
+  whether completed or cancelled (`cancelled` in the context). A stream that is
+  never iterated writes none, but its quota charge is spent.
+- **Not an artifact.** There is no envelope, expiry or idempotency key. A
+  consumer that needs a retry-safe artifact keeps using `exportRecords`.
+- **Mid-stream failure.** If a source throws, the generator throws after the
+  chunks already delivered; start a new stream to retry, nothing is persisted.
 
 ## Testing
 
@@ -115,3 +104,6 @@ paged export are covered in `core/export/__tests__/trends.test.ts`.
 
 Each export emits `export.generate` and `export.authorize` telemetry; see
 [docs/TELEMETRY.md](./TELEMETRY.md).
+
+Streaming, lazy pulling, cancellation and forbidden fields are covered in
+`core/export/__tests__/exportStream.test.ts`.
