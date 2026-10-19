@@ -47,3 +47,25 @@ The simulation engine (`core/policy/simulation.ts`) operates as a **strictly rea
    - If `rollbackConstraints.reversible === false`, an automated snapshot must have been taken prior to execution.
    - Run disaster recovery verification: `npm run recovery:validate`.
    - Restore database and ledger state from the pre-simulation checkpoint using the disaster recovery runbook (`core/recovery/`).
+
+---
+
+## Maintainer simulation tool (#189)
+
+`runPolicySimulation(auth, request)` in `core/policy/maintainerSimulation.ts` is the maintainer-facing entry point. It runs the same read-only `PolicySimulator` and adds:
+
+- **Permission gate** — requires `admin:config`; other roles get `permission_denied`.
+- **Validation** — a malformed policy returns `invalid_policy` and malformed or duplicate records return `invalid_records`. Both carry the full list of problems in `detail`, and nothing is simulated.
+- **Record selection** — pass `recordIds` to simulate against a subset of `records` (for example a fixture or a sampled production export). Ids that match nothing are returned in `unmatchedRecordIds`.
+- **Explanation** — `outcome` is `no_impact`, `limited_impact`, or `broad_impact` (more than 30% of evaluated records affected). `examples` lists the most severe affected records with the reason for each, capped by `maxExamples` (default 5; the rest are counted in `omittedExamples`). `report.operationalWarnings` carries the risk warnings.
+
+The policy and the records are only read. Run it against fixtures or an export; it has no write path to production data.
+
+Retries are deterministic when callers pass `now`: the simulation identifier
+is derived from that evaluation timestamp, and affected examples are ordered by
+severity then record id. Keep the same snapshot and `now` while retrying after
+a transport failure. A new snapshot should use a new timestamp and is a new
+preview. Invalid selection ids or bounds fail before evaluation; authorization
+denials fail before records are inspected. Because a preview never writes,
+rollback consists only of discarding it. Applying a policy remains a separate,
+authorized operation and must take its own recovery checkpoint.

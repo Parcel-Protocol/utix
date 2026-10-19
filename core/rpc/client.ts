@@ -1,5 +1,6 @@
 import { DEFAULT_NETWORK, SOROBAN_RPC_URLS } from "@/core/network/config";
 import type { StellarNetwork } from "@/core/network/types";
+import { emitTelemetry, newCorrelationId } from "@/core/telemetry/telemetry";
 
 export interface JsonRpcSuccess<T> {
   jsonrpc: "2.0";
@@ -23,8 +24,6 @@ export const RPC_STANDARD_CODES = {
   INTERNAL_ERROR: -32603,
   MALFORMED_ENVELOPE: -32000
 } as const;
-
-let requestId = 0;
 
 /**
  * Validates untrusted JSON-RPC payload and parses it into a typed JsonRpcResponse.
@@ -122,7 +121,8 @@ export function parseJsonRpcResponse<T>(
     if (
       err === null ||
       typeof err !== "object" ||
-      typeof (err as Record<string, unknown>).code !== "number" ||
+      // JSON-RPC 2.0 §5.1: the error code MUST be an integer.
+      !Number.isInteger((err as Record<string, unknown>).code) ||
       typeof (err as Record<string, unknown>).message !== "string"
     ) {
       return {
@@ -130,7 +130,7 @@ export function parseJsonRpcResponse<T>(
         id: rawId,
         error: {
           code: RPC_STANDARD_CODES.INVALID_REQUEST,
-          message: "Malformed JSON-RPC response: error field must be an object with numeric code and string message",
+          message: "Malformed JSON-RPC response: error field must be an object with integer code and string message",
           data: err
         }
       };
@@ -186,11 +186,26 @@ export function isRpcFailure<T>(value: JsonRpcResponse<T> | unknown): value is J
 export async function sorobanRpc<T>(
   method: string,
   params: unknown = {},
-  options: { network?: StellarNetwork; signal?: AbortSignal } = {}
+  options: { network?: StellarNetwork; signal?: AbortSignal; correlationId?: string } = {}
 ): Promise<JsonRpcResponse<T>> {
   const network = options.network ?? DEFAULT_NETWORK;
-  requestId += 1;
-  const currentId = requestId;
+  const correlationId = options.correlationId ?? newCorrelationId();
+  const currentId = correlationId;
+  const startedAt = performance.now();
+
+  const record = (result: JsonRpcResponse<T>): JsonRpcResponse<T> => {
+    const failed = isRpcFailure(result);
+    emitTelemetry({
+      op: "soroban.rpc",
+      actorType: "client",
+      result: failed ? "failure" : "success",
+      latencyMs: performance.now() - startedAt,
+      correlationId,
+      errorCode: failed ? String(result.error.code) : undefined,
+      payload: { method, network }
+    });
+    return result;
+  };
 
   let response: Response;
   try {
@@ -201,7 +216,7 @@ export async function sorobanRpc<T>(
       signal: options.signal
     });
   } catch (err: unknown) {
-    return {
+    return record({
       jsonrpc: "2.0",
       id: currentId,
       error: {
@@ -209,14 +224,14 @@ export async function sorobanRpc<T>(
         message: err instanceof Error ? err.message : "Network fetch failed",
         data: err
       }
-    };
+    });
   }
 
   let body: unknown;
   try {
     body = await response.json();
   } catch (err: unknown) {
-    return {
+    return record({
       jsonrpc: "2.0",
       id: currentId,
       error: {
@@ -224,11 +239,11 @@ export async function sorobanRpc<T>(
         message: `Failed to parse RPC response JSON (HTTP ${response.status})`,
         data: err
       }
-    };
+    });
   }
 
   if (!response.ok && !isRpcFailure(body)) {
-    return {
+    return record({
       jsonrpc: "2.0",
       id: currentId,
       error: {
@@ -236,8 +251,8 @@ export async function sorobanRpc<T>(
         message: `Soroban RPC responded with HTTP ${response.status}`,
         data: body
       }
-    };
+    });
   }
 
-  return parseJsonRpcResponse<T>(body, currentId);
+  return record(parseJsonRpcResponse<T>(body, currentId));
 }

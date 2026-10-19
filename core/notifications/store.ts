@@ -154,6 +154,28 @@ function parseNotification(value: unknown): Notification | null {
   };
 }
 
+/**
+ * Thrown when `updatePreferences` is given an `expectedVersion` that is no
+ * longer the stored version: another tab or device wrote in between, so the
+ * caller's patch was computed from stale preferences (#271).
+ */
+export class StalePreferencesVersionError extends Error {
+  // Explicit fields, not parameter properties, so Node's type stripping can load this module.
+  readonly recipient: NotificationRecipient;
+  readonly expectedVersion: number;
+  readonly actualVersion: number;
+
+  constructor(recipient: NotificationRecipient, expectedVersion: number, actualVersion: number) {
+    super(
+      `Stale preferences for ${recipient}: expected version ${expectedVersion}, stored version is ${actualVersion}`
+    );
+    this.name = "StalePreferencesVersionError";
+    this.recipient = recipient;
+    this.expectedVersion = expectedVersion;
+    this.actualVersion = actualVersion;
+  }
+}
+
 export class NotificationStore {
   private readonly storage: NotificationStorage;
   private readonly maxEntries: number;
@@ -255,6 +277,10 @@ export class NotificationStore {
 
   /**
    * Updates durable preferences for a recipient and records an audit log.
+   *
+   * Pass `expectedVersion` (the `version` the patch was computed from) to make
+   * the write a compare-and-set: a stale version throws
+   * `StalePreferencesVersionError` instead of silently overwriting a newer write.
    */
   updatePreferences(
     recipient: NotificationRecipient,
@@ -266,6 +292,9 @@ export class NotificationStore {
     }
     this.assertPreferenceEditor(recipient, actor);
     const current = this.getPreferences(recipient);
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new StalePreferencesVersionError(recipient, expectedVersion, current.version);
+    }
     const updated: NotificationPreferences = {
       recipient,
       muted: typeof patch.muted === "boolean" ? patch.muted : current.muted,
