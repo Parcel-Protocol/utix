@@ -27,6 +27,7 @@ import { manifest as feeStats } from "@/features/fee-stats/manifest";
 import { manifest as freighterConnect } from "@/features/freighter-connect/manifest";
 import { manifest as hashCalculator } from "@/features/hash-calculator/manifest";
 import { manifest as horizonHealth } from "@/features/horizon-health/manifest";
+import { manifest as keypairGenerator } from "@/features/keypair-generator/manifest";
 import { manifest as ledgerLookup } from "@/features/ledger-lookup/manifest";
 import { manifest as ledgerRangePlanner } from "@/features/ledger-range-planner/manifest";
 import { manifest as liquidityPoolCalculator } from "@/features/liquidity-pool-calculator/manifest";
@@ -50,7 +51,9 @@ import { manifest as preconditionsExplainer } from "@/features/preconditions-exp
 import { manifest as priceFractionLab } from "@/features/price-fraction-lab/manifest";
 import { manifest as reserveCalculator } from "@/features/reserve-calculator/manifest";
 import { manifest as resultCodeExplainer } from "@/features/result-code-explainer/manifest";
+import { manifest as scvalCodec } from "@/features/scval-codec/manifest";
 import { manifest as sep10Inspector } from "@/features/sep10-inspector/manifest";
+import { manifest as sep12Fields } from "@/features/sep12-fields/manifest";
 import { manifest as sep7SignatureVerifier } from "@/features/sep7-signature-verifier/manifest";
 import { manifest as sequenceInspector } from "@/features/sequence-inspector/manifest";
 import { manifest as signatureVerifier } from "@/features/signature-verifier/manifest";
@@ -101,6 +104,7 @@ export const generatedManifests: FeatureManifest[] = [
   freighterConnect,
   hashCalculator,
   horizonHealth,
+  keypairGenerator,
   ledgerLookup,
   ledgerRangePlanner,
   liquidityPoolCalculator,
@@ -124,7 +128,9 @@ export const generatedManifests: FeatureManifest[] = [
   priceFractionLab,
   reserveCalculator,
   resultCodeExplainer,
+  scvalCodec,
   sep10Inspector,
+  sep12Fields,
   sep7SignatureVerifier,
   sequenceInspector,
   signatureVerifier,
