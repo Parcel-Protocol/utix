@@ -23,18 +23,22 @@ export {
   type AuditInput,
   type AuditOptions,
   type AuditOutcome,
+  type AuditReceiptSigner,
   type AuditPage,
   type AuditScope,
   type AuditStorage,
   type AuditTarget,
+  type SignedAuditReceipt,
   type AuditTrail
 } from "@/core/audit/audit";
 export {
   OperationalDataRetentionManager,
   scrubSensitiveValue,
   type DeletionOptions,
+  type DeletionVerificationProof,
+  type RetentionEnforcementVerificationResult,
   type RetentionErrorCode,
   type RetentionPolicy,
   type RetentionSweepResult
-} from "./retention";
-export { createAuditEvidenceBundle, verifyAuditEvidenceBundle, type AuditEvidenceBundle } from "./evidence-bundle";
+} from "./retention.ts";
+export { createAuditEvidenceBundle, verifyAuditEvidenceBundle, type AuditEvidenceBundle } from "./evidence-bundle.ts";

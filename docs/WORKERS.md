@@ -121,6 +121,59 @@ Each job emits `worker.run` (success) or `worker.retry` / `worker.exhausted`
 (failure) telemetry with latency, error code and the job's correlation id. See
 [docs/TELEMETRY.md](./TELEMETRY.md) for the dashboard queries.
 
+## Submit boundary validation
+
+`submit()` checks the job input with `validateJobInput` (`core/workers/job-input.ts`, #333) before anything else happens. A refused submission returns `{ ok: false, code: "invalid_job_input", detail: <violation> }`. Nothing is queued, no quota is charged and no idempotency claim is recorded, so a corrected retry can reuse the same key.
+
+| Violation | Refused when |
+|---|---|
+| `invalid_operation` | Not 1 to 128 ASCII characters matching `[A-Za-z0-9][A-Za-z0-9_.:-]*` (blocks whitespace, control characters, zero-width characters and homoglyphs) |
+| `invalid_max_attempts` | Not an integer from 1 to 100. Before this check, `NaN` produced a job that never dead-lettered |
+| `invalid_delay` | Negative, not finite, or longer than 30 days |
+| `invalid_dedupe_key` | Empty, longer than 256 characters, or containing control, zero-width or bidi characters |
+| `invalid_params` | Not a plain object, or containing a function, `undefined`, `NaN`/`Infinity`, a bigint, a symbol key, a `Date`/`Map`/class instance, or a cycle |
+| `forbidden_param_key` | An own `__proto__`, `constructor` or `prototype` key at any depth |
+| `params_too_deep` / `params_too_large` | Nested more than 16 levels, or larger than 64 KiB as UTF-8 JSON |
+
+Input is refused, never rewritten. `enqueue()` is the trusted internal path and is not validated. The malformed and replay cases live in one corpus, `core/workers/__tests__/fixtures/submitAttacks.ts`; add new cases there.
+
+Replay behaviour is unchanged and pinned by the same tests:
+
+- an identical retry, even with keys in a different order, replays the original job;
+- the same key with a different payload, operation or retry budget returns `idempotency_key_conflict`;
+- a malformed replay of a valid key is refused at the boundary and leaves the recorded outcome intact.
+
+## Resumable jobs
+
+Handlers that work through many items can record progress (#334):
+
+```ts
+framework.register("batch.import", (params, context) => {
+  const start = typeof context.checkpoint === "number" ? context.checkpoint : 0;
+  for (let i = start; i < items.length; i += 1) {
+    context.signal.throwIfAborted();
+    importItem(items[i]);
+    context.saveCheckpoint(i + 1);
+  }
+});
+```
+
+- `context.checkpoint` is the last value saved by an earlier attempt, or `undefined` on a fresh job.
+- `saveCheckpoint` stores a JSON deep copy on `job.checkpoint`. A value JSON cannot represent (a function, a bigint, a cycle) throws a `TypeError`, which fails the attempt like any other error.
+- The checkpoint survives automatic retries, `retryJob()` and dead-letter recovery, so a resumed attempt skips work that already finished. Save a checkpoint only *after* the side effect it covers is done.
+
+## Dead-letter recovery
+
+`dead_lettered` is terminal in the `worker_job` lifecycle table, so `retryJob()` refuses it with `terminal_state`. To bring the work back, use `recoverDeadLetter(id, auth, { resume? })` (#334):
+
+- It requires `admin:recovery` (the `maintainer` role). Other callers get `unauthorized`.
+- It creates a **new** queued job with a fresh attempt budget and the same operation, params, dedupe key and correlation id. The new job's `recoveredFrom` points back, and it carries the dead letter's checkpoint unless `resume: false`.
+- The dead letter itself is untouched apart from `recoveredBy`, so its failure context stays available for audit.
+- Recovering the same dead letter again returns the existing replacement, so a retried request never creates two jobs. If the replacement also dead-letters, recover the replacement.
+- It refuses `unknown_job`, `not_dead_lettered`, and `unregistered`: the handler is still missing, so recovery would dead-letter again immediately. Deploy the handler first.
+
+Use `resume: false` when the checkpoint itself is suspect, for example when the failure was caused by bad progress data.
+
 ## Bounded queue backpressure
 
 Expensive operations (analytics, Soroban simulations, index rebuilds, export

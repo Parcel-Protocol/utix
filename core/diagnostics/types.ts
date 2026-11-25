@@ -70,4 +70,6 @@ export interface DiagnosticsOptions {
   readonly now?: number | Date;
   readonly strict?: boolean; // Treat warnings as failures
   readonly actor?: { kind: string; id: string; permissions?: readonly string[] };
+  readonly maxAttempts?: number;
+  readonly retryDelayMs?: number;
 }

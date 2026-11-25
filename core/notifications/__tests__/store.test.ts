@@ -109,6 +109,75 @@ describe("NotificationStore", () => {
 
     expect(store.list(account).map((notification) => notification.dedupeKey)).toEqual(["event:2", "event:1"]);
   });
+
+  it("does not republish a duplicate after inbox eviction until its dedupe record expires", () => {
+    let now = 1_700_000_000_000;
+    const store = new NotificationStore(new TestStorage(), 1, {
+      now: () => now,
+      dedupeTtlMs: 1_000
+    });
+    const makeInput = (dedupeKey: string) => ({
+      recipient: account,
+      event: "completed" as const,
+      tone: "success" as const,
+      title: dedupeKey,
+      message: "Done",
+      href: "/tools/operation-browser",
+      dedupeKey
+    });
+
+    expect(store.publish(makeInput("first"))).not.toBeNull();
+    expect(store.publish(makeInput("second"))).not.toBeNull();
+    expect(store.list(account)).toHaveLength(1);
+    expect(store.publish(makeInput("first"))).toBeNull();
+
+    now += 1_001;
+    expect(store.publish(makeInput("first"))).not.toBeNull();
+  });
+
+  it("keeps the inbox write when persisting dedupe metadata fails, so a retry stays idempotent", () => {
+    const memory = new TestStorage();
+    const storage: NotificationStorage = {
+      getItem: (key) => memory.getItem(key),
+      setItem(key, value) {
+        if (key.startsWith("utix:notification-dedupe:")) throw new Error("storage full");
+        memory.setItem(key, value);
+      },
+      removeItem: (key) => memory.removeItem(key)
+    };
+    const store = new NotificationStore(storage);
+    const input = {
+      recipient: account,
+      event: "completed" as const,
+      tone: "success" as const,
+      title: "Done",
+      message: "Finished",
+      href: "/tools/operation-browser",
+      dedupeKey: "job:1"
+    };
+
+    expect(() => store.publish(input)).toThrow("storage full");
+    const retry = new NotificationStore(memory).publish(input);
+    expect(retry?.dedupeKey).toBe("job:1");
+    expect(new NotificationStore(memory).list(account)).toHaveLength(1);
+  });
+
+  it("clears notification dedupe receipts when the recipient clears the inbox", () => {
+    const store = new NotificationStore(new TestStorage());
+    const input = {
+      recipient: account,
+      event: "completed" as const,
+      tone: "success" as const,
+      title: "Done",
+      message: "Finished",
+      href: "/tools/operation-browser",
+      dedupeKey: "job:clear"
+    };
+
+    expect(store.publish(input)).not.toBeNull();
+    store.clear(account);
+    expect(store.publish(input)).not.toBeNull();
+  });
 });
 
 describe("NotificationStore lifecycle", () => {

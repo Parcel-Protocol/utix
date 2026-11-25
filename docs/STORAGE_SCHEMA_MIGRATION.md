@@ -88,3 +88,17 @@ The **Storage Schema Migration Framework** (`core/migration/storage-schema.ts`) 
    ```typescript
    StorageV1ToV2Migration.rollback(v2Records);
    ```
+
+## Compatibility Matrix
+
+`core/migration/compatibility-matrix.ts` defines the supported v1/v2 fixture
+matrix. v1-to-v1 and v2-to-v2 are noops, v1-to-v2 is forward migration, and
+v2-to-v1 is rollback migration. `id`, `kind`, `state`, `correlationId`, and
+`payload` are business fields that must survive every migration unchanged.
+
+The matrix is executable through
+`core/migration/__tests__/compatibility-matrix.test.ts` and
+`core/migration/__tests__/storage-compatibility.test.ts`. An unsupported
+version must stop before mutation and retain the original records. Retries are
+idempotent: already-current V2 records are returned unchanged. Rollback strips
+only V2 metadata and checksums and does not rewrite business fields.

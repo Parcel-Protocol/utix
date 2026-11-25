@@ -12,9 +12,13 @@
  * relax a list without touching the validation logic.
  */
 
+import { createHash } from "crypto";
 import { err, ok, type Result } from "@/core/result/result";
 import type {
   AllowListErrorCode,
+  ContentInfo,
+  ContentPolicy,
+  ContentValidator,
   DestinationInfo,
   DestinationPolicy,
   DestinationValidator,
@@ -23,10 +27,20 @@ import type {
   FileTypeValidator,
   UrlInfo,
   UrlPolicy,
-  UrlValidator
+  UrlValidator,
 } from "./types";
 
-const DEFAULT_PORT: Readonly<Record<string, number>> = { "http:": 80, "https:": 443 };
+import {
+  DEFAULT_CONTENT_POLICY,
+  DEFAULT_DESTINATION_POLICY,
+  DEFAULT_FILE_TYPE_POLICY,
+  DEFAULT_URL_POLICY,
+} from "./types";
+
+const DEFAULT_PORT: Readonly<Record<string, number>> = {
+  "http:": 80,
+  "https:": 443,
+};
 
 // A Stellar public key (StrKey ed25519): a leading `G` followed by 55
 // base-32 characters. Validated without the SDK so this module stays
@@ -37,7 +51,9 @@ function isStellarPublicKey(value: string): boolean {
   return STELLAR_PUBLIC_KEY.test(value);
 }
 
-export function createUrlValidator(policy: UrlPolicy = DEFAULT_URL_POLICY): UrlValidator {
+export function createUrlValidator(
+  policy: UrlPolicy = DEFAULT_URL_POLICY,
+): UrlValidator {
   const allowedSchemes = new Set(policy.allowedSchemes);
   const allowedHosts = new Set(policy.allowedHosts);
   const allowedPorts = new Set(policy.allowedPorts);
@@ -61,7 +77,8 @@ export function createUrlValidator(policy: UrlPolicy = DEFAULT_URL_POLICY): UrlV
       const defaultPort = DEFAULT_PORT[parsed.protocol] ?? 0;
       // An explicit port is only tolerated when it is the scheme default or on
       // the allow-list; anything else is rejected outright.
-      if (port !== defaultPort && !allowedPorts.has(port)) return err("url_disallowed_port");
+      if (port !== defaultPort && !allowedPorts.has(port))
+        return err("url_disallowed_port");
     }
 
     return ok({
@@ -69,27 +86,37 @@ export function createUrlValidator(policy: UrlPolicy = DEFAULT_URL_POLICY): UrlV
       scheme: parsed.protocol,
       host: parsed.hostname,
       port,
-      pathname: parsed.pathname
+      pathname: parsed.pathname,
     });
   };
 }
 
 export function createFileTypeValidator(
-  policy: FileTypePolicy = DEFAULT_FILE_TYPE_POLICY
+  policy: FileTypePolicy = DEFAULT_FILE_TYPE_POLICY,
 ): FileTypeValidator {
-  const allowedExtensions = new Set(policy.allowedExtensions.map((e) => e.toLowerCase()));
+  const allowedExtensions = new Set(
+    policy.allowedExtensions.map((e) => e.toLowerCase()),
+  );
   const allowedMimes = new Set(policy.allowedMimes.map((m) => m.toLowerCase()));
 
   return (fileName, mime, size): Result<FileTypeInfo, AllowListErrorCode> => {
-    if (typeof size !== "number" || !Number.isFinite(size) || size < 0) return err("file_type_not_allowed");
+    if (typeof size !== "number" || !Number.isFinite(size) || size < 0)
+      return err("file_type_not_allowed");
     if (size > policy.maxSize) return err("file_too_large");
 
     const dot = fileName.lastIndexOf(".");
     const extension =
-      dot === -1 || dot === 0 || dot === fileName.length - 1 ? "" : fileName.slice(dot).toLowerCase();
-    if (!extension || !allowedExtensions.has(extension)) return err("file_type_not_allowed");
+      dot === -1 || dot === 0 || dot === fileName.length - 1
+        ? ""
+        : fileName.slice(dot).toLowerCase();
+    if (!extension || !allowedExtensions.has(extension))
+      return err("file_type_not_allowed");
 
-    if (mime !== null && mime !== undefined && !allowedMimes.has(mime.toLowerCase())) {
+    if (
+      mime !== null &&
+      mime !== undefined &&
+      !allowedMimes.has(mime.toLowerCase())
+    ) {
       return err("file_type_not_allowed");
     }
 
@@ -98,12 +125,13 @@ export function createFileTypeValidator(
 }
 
 export function createDestinationValidator(
-  policy: DestinationPolicy = DEFAULT_DESTINATION_POLICY
+  policy: DestinationPolicy = DEFAULT_DESTINATION_POLICY,
 ): DestinationValidator {
   const allowedDestinations = new Set(policy.allowedDestinations);
 
   return (destination): Result<DestinationInfo, AllowListErrorCode> => {
-    if (typeof destination !== "string" || !destination.trim()) return err("destination_invalid");
+    if (typeof destination !== "string" || !destination.trim())
+      return err("destination_invalid");
     const value = destination.trim();
 
     // Reject secret seeds on the prefix alone, before any other check.
@@ -128,3 +156,43 @@ export function createDestinationValidator(
 export const validateUrl = createUrlValidator();
 export const validateFileType = createFileTypeValidator();
 export const validateDestination = createDestinationValidator();
+
+export function createContentValidator(
+  policy: ContentPolicy = DEFAULT_CONTENT_POLICY,
+): ContentValidator {
+  const allowedHashes = new Set(policy.allowedHashes);
+
+  return (content): Result<ContentInfo, AllowListErrorCode> => {
+    if (typeof content !== "string") return err("content_invalid");
+    if (content.length === 0) return err("content_invalid");
+    if (content.length > policy.maxContentSize) return err("content_too_large");
+
+    // Compute SHA-256 hash of content synchronously for validation
+    const hash = computeHash(content);
+
+    // If allow-lists exist, enforce them strictly
+    if (policy.allowedHashes.length > 0 && !allowedHashes.has(hash)) {
+      return err("content_not_allowed");
+    }
+
+    // Check against regex patterns if provided
+    if (policy.allowedPatterns.length > 0) {
+      const matchesAny = policy.allowedPatterns.some((pattern) =>
+        pattern.test(content),
+      );
+      if (!matchesAny) return err("content_not_allowed");
+    }
+
+    return ok({ content, hash });
+  };
+}
+
+/**
+ * Compute SHA-256 hash of content.
+ * Uses Node.js crypto module for deterministic, cryptographically-secure hashing.
+ */
+function computeHash(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+export const validateContent = createContentValidator();

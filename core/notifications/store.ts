@@ -17,6 +17,34 @@ import {
 
 const STORAGE_PREFIX = "utix:notifications:v1:";
 const PREFERENCES_PREFIX = "utix:notification-preferences:v1:";
+const DEDUPE_PREFIX = "utix:notification-dedupe:v1:";
+const DEFAULT_DEDUPE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_DEDUPE_RECORDS = 1000;
+
+interface NotificationDedupeRecord {
+  readonly event: NotificationEventType;
+  readonly dedupeKey: string;
+  readonly notificationId: string;
+  readonly recordedAt: number;
+}
+
+function isDedupeRecord(value: unknown, cutoff: number): value is NotificationDedupeRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<NotificationDedupeRecord>;
+  return (
+    isNotificationEvent(record.event) &&
+    typeof record.dedupeKey === "string" &&
+    typeof record.notificationId === "string" &&
+    typeof record.recordedAt === "number" &&
+    Number.isFinite(record.recordedAt) &&
+    record.recordedAt >= cutoff
+  );
+}
+
+export interface NotificationStoreOptions {
+  readonly dedupeTtlMs?: number;
+  readonly now?: () => number;
+}
 
 /** The initial state, taken from the lifecycle table rather than repeated. */
 const INITIAL_STATE = notificationMachine.initial() as NotificationState;
@@ -179,10 +207,20 @@ export class StalePreferencesVersionError extends Error {
 export class NotificationStore {
   private readonly storage: NotificationStorage;
   private readonly maxEntries: number;
+  private readonly dedupeTtlMs: number;
+  private readonly now: () => number;
 
-  constructor(storage: NotificationStorage = browserStorage(), maxEntries = 50) {
+  constructor(
+    storage: NotificationStorage = browserStorage(),
+    maxEntries = 50,
+    options: NotificationStoreOptions = {}
+  ) {
     this.storage = storage;
     this.maxEntries = Math.max(1, Math.floor(maxEntries));
+    const dedupeTtlMs = options.dedupeTtlMs ?? DEFAULT_DEDUPE_TTL_MS;
+    this.dedupeTtlMs =
+      Number.isFinite(dedupeTtlMs) ? Math.max(0, dedupeTtlMs) : DEFAULT_DEDUPE_TTL_MS;
+    this.now = options.now ?? (() => Date.now());
   }
 
   private key(recipient: NotificationRecipient): string {
@@ -191,6 +229,25 @@ export class NotificationStore {
 
   private prefKey(recipient: NotificationRecipient): string {
     return `${PREFERENCES_PREFIX}${recipient}`;
+  }
+
+  private dedupeKeyFor(recipient: NotificationRecipient): string {
+    return `${DEDUPE_PREFIX}${recipient}`;
+  }
+
+  private readDedupeRecords(recipient: NotificationRecipient): NotificationDedupeRecord[] {
+    const raw = this.storage.getItem(this.dedupeKeyFor(recipient));
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      const cutoff = this.now() - this.dedupeTtlMs;
+      return parsed.filter((record): record is NotificationDedupeRecord =>
+        isDedupeRecord(record, cutoff)
+      );
+    } catch {
+      return [];
+    }
   }
 
   private read(recipient: NotificationRecipient): Notification[] {
@@ -285,11 +342,15 @@ export class NotificationStore {
   updatePreferences(
     recipient: NotificationRecipient,
     patch: Partial<Omit<NotificationPreferences, "recipient" | "mandatoryAlertsAlwaysDeliver">>,
-    actor: NotificationRecipient = recipient
+    actorOrOptions: NotificationRecipient | { readonly expectedVersion?: number } = recipient,
+    options: { readonly expectedVersion?: number } = {}
   ): NotificationPreferences {
     if (!isNotificationRecipient(recipient)) {
       throw new Error(`Invalid notification recipient: ${String(recipient)}`);
     }
+    const actor = typeof actorOrOptions === "string" ? actorOrOptions : recipient;
+    const expectedVersion =
+      typeof actorOrOptions === "string" ? options.expectedVersion : actorOrOptions.expectedVersion;
     this.assertPreferenceEditor(recipient, actor);
     const current = this.getPreferences(recipient);
     if (expectedVersion !== undefined && expectedVersion !== current.version) {
@@ -401,6 +462,11 @@ export class NotificationStore {
       (notification) => notification.event === input.event && notification.dedupeKey === dedupeKey
     );
     if (duplicate) return duplicate;
+    const dedupeRecords = this.readDedupeRecords(input.recipient);
+    const recordedDuplicate = dedupeRecords.find(
+      (record) => record.event === input.event && record.dedupeKey === dedupeKey
+    );
+    if (recordedDuplicate) return null;
 
     const isMandatory = this.isMandatoryAlert(input);
     const preferences = this.getPreferences(input.recipient);
@@ -467,6 +533,16 @@ export class NotificationStore {
     };
 
     this.write(input.recipient, [notification, ...existing]);
+    const nextDedupeRecords = [
+      ...dedupeRecords,
+      {
+        event: input.event,
+        dedupeKey,
+        notificationId: notification.id,
+        recordedAt: this.now()
+      }
+    ].slice(-MAX_DEDUPE_RECORDS);
+    this.storage.setItem(this.dedupeKeyFor(input.recipient), JSON.stringify(nextDedupeRecords));
     recordAudit({
       action: "notification.published",
       actor: { kind: "user", id: input.recipient },
@@ -528,5 +604,6 @@ export class NotificationStore {
       });
     }
     this.storage.removeItem(this.key(recipient));
+    this.storage.removeItem(this.dedupeKeyFor(recipient));
   }
 }

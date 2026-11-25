@@ -559,3 +559,154 @@ export function abandonOperationAuthorized(
     actor: options.actor ?? `maintainer:${auth.userId ?? "unknown"}`
   });
 }
+
+/**
+ * Deterministically rolls back an operation after an external side effect fails.
+ *
+ * Key guarantees:
+ * 1. LIFO Compensation Order: Previously succeeded or side-effect-committed steps
+ *    are compensated in exact reverse chronological order.
+ * 2. Idempotent Rollback: Each step compensation receives a stable idempotency key
+ *    (`operation:<id>:step:<id>:rollback`), ensuring retried rollbacks do not double-compensate.
+ * 3. Atomic Failure Boundary: If a compensation step fails, the rollback stops at that step,
+ *    records `rollback_failed`, preserves diagnostic context, and does not claim clean rollback.
+ * 4. Audit & Telemetry: Each compensation step and the overall rollback are audited.
+ */
+export async function rollbackOperation<TContext>(
+  definition: OperationDefinition<TContext>,
+  options: RunOperationOptions<TContext>,
+  failureReason?: string
+): Promise<Result<OperationRecord, OperationErrorCode>> {
+  if (!validateDefinition(definition)) return err("invalid_operation");
+
+  let stored: OperationRecord | undefined;
+  try {
+    stored = options.storage.read(options.operationId);
+  } catch {
+    return err("storage_error");
+  }
+  if (!stored) return err("unknown_operation");
+  if (stored.kind !== definition.kind) return err("invalid_operation");
+
+  const now = options.now ?? (() => Date.now());
+  const stamp = (): string => new Date(now()).toISOString();
+  const actor = options.actor ?? "system";
+
+  let record = stored;
+  const stepDefMap = new Map(definition.steps.map((s) => [s.id, s]));
+
+  // Find all steps that executed and might need rollback (committed side effect), in reverse order (LIFO)
+  const stepsToRollback = [...record.steps]
+    .reverse()
+    .filter((step) => {
+      const isCommitted = step.sideEffectCommitted === true;
+      const notYetRolledBack = step.rollbackStatus !== "rolled_back";
+      return isCommitted && notYetRolledBack;
+    });
+
+  if (stepsToRollback.length === 0 && record.rolledBackAt) {
+    // Already fully rolled back (idempotent call)
+    return ok(record);
+  }
+
+  for (const checkpoint of stepsToRollback) {
+    const stepDef = stepDefMap.get(checkpoint.id);
+    if (!stepDef?.rollback) {
+      // Step does not declare a rollback handler; mark as rolled_back if no side effect, or keep
+      const at = stamp();
+      const updatedCheckpoint: StepCheckpoint = {
+        ...checkpoint,
+        rollbackStatus: "rolled_back",
+        updatedAt: at
+      };
+      record = withStep(record, updatedCheckpoint, at);
+      if (!persist(options.storage, record)) return err("storage_error");
+      continue;
+    }
+
+    const rollbackAttempt = (checkpoint.attempt || 1);
+    const rollbackIdempotencyKey = `${checkpoint.idempotencyKey}:rollback`;
+
+    let outcome: StepRollbackOutcome;
+    try {
+      outcome = await stepDef.rollback({
+        operationId: record.id,
+        stepId: checkpoint.id,
+        attempt: rollbackAttempt,
+        idempotencyKey: rollbackIdempotencyKey,
+        output: checkpoint.output,
+        context: options.context,
+        error: failureReason ?? checkpoint.errorCode
+      });
+    } catch (errCatch) {
+      outcome = {
+        status: "failed",
+        errorCode: errCatch instanceof Error ? errCatch.message : "rollback_threw"
+      };
+    }
+
+    const at = stamp();
+    if (outcome.status === "rolled_back") {
+      const updatedCheckpoint: StepCheckpoint = {
+        ...checkpoint,
+        rollbackStatus: "rolled_back",
+        rollbackOutput: outcome.output,
+        rollbackErrorCode: undefined,
+        updatedAt: at
+      };
+      record = withStep(record, updatedCheckpoint, at);
+      if (!persist(options.storage, record)) return err("storage_error");
+    } else {
+      const updatedCheckpoint: StepCheckpoint = {
+        ...checkpoint,
+        rollbackStatus: outcome.status === "interrupted" ? "rollback_interrupted" : "rollback_failed",
+        rollbackErrorCode: outcome.errorCode,
+        updatedAt: at
+      };
+      record = withStep(record, updatedCheckpoint, at);
+      if (!persist(options.storage, record)) return err("storage_error");
+      return err("rollback_failed");
+    }
+  }
+
+  // Once all compensations succeed, transition operation state to abandoned or failed
+  const finalAt = stamp();
+  if (record.state !== "abandoned" && record.state !== "failed") {
+    const event: OperationEvent = record.state === "running" ? "fail" : "abandon";
+    const advanced = advance(record, event, {
+      at: finalAt,
+      actor,
+      scope: "maintainer",
+      audited: true,
+      reason: failureReason ?? "operation.rollback"
+    });
+    if (isErr(advanced)) {
+      // If direct transition is not valid in state machine, force terminal transition
+      record = { ...record, state: "abandoned", rolledBackAt: finalAt, updatedAt: finalAt };
+    } else {
+      record = { ...advanced.value, rolledBackAt: finalAt, updatedAt: finalAt };
+    }
+  } else {
+    record = { ...record, rolledBackAt: finalAt, updatedAt: finalAt };
+  }
+
+  if (!persist(options.storage, record)) return err("storage_error");
+  return ok(record);
+}
+
+/**
+ * Server-side authorization boundary for rolling back an operation.
+ * Requires `admin:recovery` permission.
+ */
+export async function rollbackOperationAuthorized<TContext>(
+  auth: AuthContext,
+  definition: OperationDefinition<TContext>,
+  options: RunOperationOptions<TContext>,
+  failureReason?: string
+): Promise<Result<OperationRecord, OperationErrorCode>> {
+  if (!hasPermission(auth.role, "admin:recovery")) return err("permission_denied");
+  return rollbackOperation(definition, {
+    ...options,
+    actor: options.actor ?? `maintainer:${auth.userId ?? "unknown"}`
+  }, failureReason);
+}

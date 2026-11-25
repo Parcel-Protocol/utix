@@ -1,0 +1,16 @@
+[
+  {
+    "id": "current-op-1",
+    "schemaVersion": 2,
+    "kind": "operation",
+    "state": "completed",
+    "correlationId": "corr-2",
+    "partition": "default",
+    "actor": { "kind": "system", "id": "migration_runner" },
+    "checksum": "0123456789abcdef0123456789abcdef",
+    "createdAt": "2026-01-02T00:00:00.000Z",
+    "updatedAt": "2026-01-02T00:01:00.000Z",
+    "payload": { "amount": "2.50" },
+    "migrationMeta": { "migratedFrom": 1, "migratedAt": "2026-01-02T00:00:00.000Z" }
+  }
+]

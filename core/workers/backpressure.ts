@@ -256,11 +256,11 @@ export function createBoundedEnqueueGate(
 
   // Capacity waiters: each entry is a resolve function from a Promise.
   // When a slot opens (detected after a drain completes) we fire all of them.
-  const waiters: Array<() => void> = [];
+  const waiters: Array<{ readonly resolve: () => void }> = [];
 
   function notifyWaiters(): void {
     const snapshot = waiters.splice(0);
-    for (const resolve of snapshot) resolve();
+    for (const waiter of snapshot) waiter.resolve();
   }
 
   /**
@@ -279,7 +279,18 @@ export function createBoundedEnqueueGate(
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
-      waiters.push(resolve);
+      const waiter = {
+        resolve
+      };
+      waiters.push(waiter);
+      const interval = setInterval(() => {
+        if (countLive(framework, prefix) < maxConcurrent) {
+          clearInterval(interval);
+          const index = waiters.indexOf(waiter);
+          if (index >= 0) waiters.splice(index, 1);
+          resolve();
+        }
+      }, 10);
     });
   }
 

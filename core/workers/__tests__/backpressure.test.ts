@@ -408,6 +408,15 @@ describe("waitForCapacity", () => {
     await expect(gate.waitForCapacity()).resolves.toBeUndefined();
   });
 
+  it("resolves after an in-flight slot settles", async () => {
+    const fw = makeFramework();
+    const gate = makeGate(fw, { maxConcurrent: 1 });
+    gate.enqueue({ operation: "analytics.aggregate" });
+    const waiting = gate.waitForCapacity();
+    fw.drainDueJobs();
+    await expect(waiting).resolves.toBeUndefined();
+  });
+
   it("resolves after the capacity is raised", async () => {
     const fw = makeFramework();
     const gate = makeGate(fw, { maxConcurrent: 1, maxCapacityCeiling: 5 });

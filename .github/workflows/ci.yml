@@ -6,6 +6,13 @@ on:
     branches:
       - main
 
+# One run per workflow + ref. A new commit on a PR joins the same group and
+# cancels only that PR's superseded run. Pushes keep their own group and are
+# never cancelled by a PR, so release validation on main stays intact.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   quality:
     name: Lint, test, and build
@@ -43,6 +50,14 @@ jobs:
       - name: Verify the independent issue backlog
         run: npm run verify:issues
 
+      - name: Verify migration compatibility and rollback readiness
+        run: |
+          npm run verify:migration-readiness
+          npm run test -- core/migration
+
+      - name: Verify permission and hidden-record contracts
+        run: npm run verify:contract
+
       - name: Lint
         run: npm run lint
 
@@ -65,6 +80,21 @@ jobs:
 
       - name: Check bundle budgets
         run: node scripts/bundle-budget.mjs
+
+      - name: Verify reproducible release manifest
+        run: |
+          npm run verify:release-artifact
+          node scripts/release-artifact.mjs --output .release/manifest-a.json
+          node scripts/release-artifact.mjs --output .release/manifest-b.json
+          cmp .release/manifest-a.json .release/manifest-b.json
+          node scripts/release-artifact.mjs --verify .release/manifest-a.json
+
+      - name: Upload release verification manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: utix-release-manifest
+          path: .release/manifest-a.json
+          if-no-files-found: error
 
       - name: Validate disaster recovery
         run: npm run recovery:validate

@@ -1,6 +1,48 @@
 export type IncidentSeverity = 'critical' | 'high' | 'medium' | 'low';
 export type IncidentStatus = 'open' | 'investigating' | 'mitigated' | 'resolved';
 
+export type RecoveryCheckStatus = 'passed' | 'failed' | 'rolled_back';
+
+export type RecoveryErrorCode =
+  | 'incident_not_found'
+  | 'no_recovery_checks_defined'
+  | 'unauthorized_operator'
+  | 'check_execution_timeout'
+  | 'recovery_verification_failed'
+  | 'rollback_execution_failed';
+
+export interface ExecutedRecoveryCheck {
+  readonly name: string;
+  readonly target?: string;
+  readonly passed: boolean;
+  readonly attempts: number;
+  readonly durationMs: number;
+  readonly rollbackOnFailure: boolean;
+  readonly error?: string;
+}
+
+export interface RecoveryExecutionSummary {
+  readonly incidentId: string;
+  readonly passed: boolean;
+  readonly status: RecoveryCheckStatus;
+  readonly executedChecks: readonly ExecutedRecoveryCheck[];
+  readonly totalDurationMs: number;
+  readonly executedAt: string;
+  readonly operator: string;
+  readonly rollbackTriggered: boolean;
+  readonly auditReceipt: string;
+}
+
+export interface RecoveryExecutionOptions {
+  readonly actor: { readonly kind: 'operator' | 'maintainer' | 'system' | 'user'; readonly id: string };
+  readonly timeoutMs?: number;
+  readonly maxRetries?: number;
+  readonly retryBackoffMs?: number;
+  readonly abortOnFirstFailure?: boolean;
+  readonly autoTriggerRollback?: boolean;
+  readonly correlationId?: string;
+}
+
 export const INCIDENT_SCHEMA_VERSION = '1.0.0';
 
 export type IncidentImportErrorCode =

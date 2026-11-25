@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPublicStatusFeed,
+  componentFromDependencyState,
   componentFromHealthIndicator,
   maintenanceStateAt,
   publishPublicStatusFeed,
@@ -72,6 +73,27 @@ function state(partial: Partial<TrustedStatusState> = {}): TrustedStatusState {
 }
 
 describe("public status feed (#184)", () => {
+  it("publishes coarse dependency degradation and keeps diagnostics private", () => {
+    const dependency = {
+      id: "horizon" as const,
+      level: "down" as const,
+      consecutiveFailures: 3,
+      lastFailureMode: "unavailable" as const,
+      lastFailureAt: NOW,
+      override: null
+    };
+    const internal = componentFromDependencyState(dependency);
+    expect(internal.visibility).toBe("internal");
+    expect(buildPublicStatusFeed(state({ components: [internal] }), NOW).components).toEqual([]);
+
+    const publicComponent = componentFromDependencyState(dependency, { id: "network-api", name: "Network data" });
+    const feed = buildPublicStatusFeed(state({ components: [publicComponent] }), NOW);
+    expect(feed.status).toBe("major_outage");
+    expect(feed.components).toEqual([{ id: "network-api", name: "Network data", status: "major_outage" }]);
+    expect(JSON.stringify(feed)).not.toContain("unavailable");
+    expect(JSON.stringify(feed)).not.toContain("consecutiveFailures");
+  });
+
   it("reports a healthy system as operational and ignores internal components", () => {
     const feed = buildPublicStatusFeed(state(), NOW);
     expect(feed).toEqual({

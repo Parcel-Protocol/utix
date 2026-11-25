@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runPolicySimulation } from "../maintainerSimulation";
+import { previewPolicyWithRecordDiffs, runPolicySimulation } from "../maintainerSimulation";
 import type { PolicyDefinition, SimulationTargetRecord } from "../types";
 
 const MAINTAINER = { role: "maintainer", userId: "ada" } as const;
@@ -107,5 +107,76 @@ describe("runPolicySimulation", () => {
         code: "permission_denied"
       });
     }
+  });
+
+  describe("affected-record preview with diffs and filtering (#401)", () => {
+    it("generates detailed field diffs and risk scores in preview", () => {
+      const records = [tx("tx-1", 5000), tx("tx-2", 4000, ["accountMerge"])];
+      const result = previewPolicyWithRecordDiffs(MAINTAINER, { policy: POLICY, records });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.examples).toHaveLength(2);
+    expect(result.value.affectedRecordIds).toEqual(expect.arrayContaining(result.value.examples.map((example) => example.id)));
+      const first = result.value.examples[0];
+      expect(first.diffs).toBeDefined();
+      expect(first.diffs!.length).toBeGreaterThan(0);
+      expect(first.diffs![0]).toMatchObject({
+        expectedImpact: expect.any(String),
+        severity: expect.any(String)
+      });
+      expect(first.riskScore).toBeGreaterThan(0);
+      expect(result.value.previewSummary).toBeDefined();
+      expect(result.value.previewSummary?.bySeverity.critical).toBe(1);
+      expect(result.value.previewSummary?.bySeverity.high).toBe(1);
+      expect(result.value.previewSummary?.byEntityType.transaction).toBe(2);
+    });
+
+    it("filters preview examples by minimum severity", () => {
+      const records = [tx("tx-1", 5000), tx("tx-2", 4000, ["accountMerge"])];
+      const result = runPolicySimulation(MAINTAINER, {
+        policy: POLICY,
+        records,
+        filter: { minSeverity: "critical" }
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.examples.every((ex) => ex.severity === "critical")).toBe(true);
+    });
+
+    it("filters preview examples by search query matching record id or reason", () => {
+      const records = [tx("tx-1", 5000), tx("tx-target", 4000, ["accountMerge"])];
+      const result = runPolicySimulation(MAINTAINER, {
+        policy: POLICY,
+        records,
+        filter: { search: "target" }
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.examples).toHaveLength(1);
+      expect(result.value.examples[0].id).toBe("tx-target");
+    });
+
+    it("rejects invalid preview filter parameters", () => {
+      const invalidFilter = runPolicySimulation(MAINTAINER, {
+        policy: POLICY,
+        records: RECORDS,
+        filter: { entityType: "invalid-type" as any, minSeverity: "ultra" as any }
+      });
+
+      expect(invalidFilter.ok).toBe(false);
+      if (!invalidFilter.ok) {
+        expect(invalidFilter.code).toBe("invalid_records");
+        expect(invalidFilter.detail).toEqual([
+          "filter.entityType must be one of account, transaction, job, quota, contract",
+          "filter.minSeverity must be one of low, medium, high, critical"
+        ]);
+      }
+    });
   });
 });

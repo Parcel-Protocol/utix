@@ -1,14 +1,27 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { type AuditActor, createIsolatedAuditTrail } from "@/core/audit/audit";
-import type { AdminConfigInput, AdminConfigKey } from "@/core/admin-config/store";
+import { generateKeyPairSync } from "node:crypto";
+import {
+  type AuditActor,
+  createIsolatedAuditTrail
+} from "@/core/audit";
+import { createEd25519AuditSigner, verifySignedAuditReceipt } from "@/core/audit/signed-receipt";
+import type { AdminConfigInput, AdminConfigKey } from "@/core/admin-config/types";
 import { createAdminConfigStore } from "@/core/admin-config/store";
 
 function actor(kind: AuditActor["kind"] = "maintainer", id = "ada"): AuditActor {
   return { kind, id };
 }
 
+const keyPair = generateKeyPairSync("ed25519");
+const receiptSigner = createEd25519AuditSigner({
+  signerId: "test-admin-signer",
+  privateKey: keyPair.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+  publicKey: keyPair.publicKey.export({ type: "spki", format: "pem" }).toString()
+});
+
 function trailBackedStore(trail = createIsolatedAuditTrail()) {
   return createAdminConfigStore({
+    receiptSigner,
     record: (input) => {
       const result = trail.record(input);
       return result.ok ? result.value : undefined;
@@ -57,6 +70,11 @@ describe("admin configuration store", () => {
     expect(typeof events[0].id).toBe("string");
     expect(typeof events[0].at).toBe("string");
     expect(typeof events[0].correlationId).toBe("string");
+    expect(verifySignedAuditReceipt(events[0], { [receiptSigner.signerId]: receiptSigner.publicKey })).toBe(true);
+    expect(verifySignedAuditReceipt(
+      { ...events[0], after: { "network.endpoint": "https://tampered.example" } },
+      { [receiptSigner.signerId]: receiptSigner.publicKey }
+    )).toBe(false);
   });
 
   it("denies an unauthorized change, leaves config untouched, and records the refusal", () => {
@@ -72,6 +90,7 @@ describe("admin configuration store", () => {
     expect(events[0].outcome).toBe("denied");
     expect(events[0].errorCode).toBe("admin_config_not_allowed");
     expect(events[0].actor).toEqual({ kind: "user", id: "viewer-1" });
+    expect(verifySignedAuditReceipt(events[0], { [receiptSigner.signerId]: receiptSigner.publicKey })).toBe(true);
   });
 
   it("denies service accounts just like viewers", () => {
@@ -157,6 +176,7 @@ describe("admin configuration store", () => {
 
   it("does not apply a change when the audit trail rejects the event", () => {
     const store = createAdminConfigStore({
+      receiptSigner,
       record: () => undefined // simulate audit trail rejection
     });
     const result = store.setConfig(input());
@@ -171,5 +191,22 @@ describe("admin configuration store", () => {
     const store = trailBackedStore(trail);
     const copy = store.getConfig();
     expect(copy["network.endpoint"]).toBe("https://horizon-testnet.stellar.org");
+  });
+
+  it("fails closed when the receipt signer is missing or fails", () => {
+    const unsignedStore = createAdminConfigStore();
+    const unsigned = unsignedStore.setConfig(input());
+    expect(unsigned).toEqual({ ok: false, code: "admin_config_receipt_unavailable" });
+    expect(unsignedStore.getConfig()["network.endpoint"]).toBe("https://horizon-testnet.stellar.org");
+
+    const failingStore = createAdminConfigStore({
+      receiptSigner: { signerId: "broken", sign: () => { throw new Error("signer unavailable"); } },
+      record: () => {
+        throw new Error("must not record unsigned change");
+      }
+    });
+    const failed = failingStore.setConfig(input());
+    expect(failed).toEqual({ ok: false, code: "admin_config_receipt_failed" });
+    expect(failingStore.getConfig()["network.endpoint"]).toBe("https://horizon-testnet.stellar.org");
   });
 });

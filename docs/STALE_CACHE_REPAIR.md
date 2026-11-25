@@ -108,3 +108,78 @@ StaleProjectionDetector.inspect(cache.snapshot(), [], context);
 - Rolling the module back is safe because nothing persists. The cache lives in
   memory only, and no existing export or contract changed. The module only adds
   new exports to `core/cache/index.ts`.
+
+## Bounded Invalidation and Read-Time Stale Detection (#411)
+
+The #270 cache already caps its size and refuses out-of-order writes. #411
+closes the remaining gaps: a reader that knows the ledger head could still be
+served a projection from before it, invalidating one account's projections
+meant an O(n) scan, and expired entries that were never read again stayed in
+memory until LRU eviction pushed them out.
+
+```ts
+// Read-time freshness: never serve a projection from before the head you have seen.
+cache.get(`account:${id}`, { minLedgerSequence: head });  // cache_stale if behind, and evicted
+cache.get("fee_stats", { maxAgeMs: 5_000 });              // cache_stale if older, kept for others
+await cache.getOrLoad(key, load, { minLedgerSequence: head, ledgerSequence: head });
+
+// Bounded invalidation.
+cache.invalidateEntity(accountId);  // every projection of one record, O(k + loads in flight)
+cache.sweepExpired(100);            // examines ≤ 100 entries, LRU first; call it on a timer
+
+// Detection and authorised repair.
+cache.inspect({ authoritativeLedgerSequence: head });           // read-only StaleInspectionReport
+cache.evictStale({ role: "maintainer" }, "head moved", { authoritativeLedgerSequence: head });
+```
+
+| Operation | Time | Notes |
+| :--- | :--- | :--- |
+| `get(key, read)` | O(1) | Same cost as before; the checks are comparisons |
+| `invalidateEntity` | O(k + loads in flight) | Secondary index `sourceEntityId → keys` |
+| `sweepExpired(m)` | O(m) | m ≤ the caller's bound (default `DEFAULT_SWEEP_SCAN` = 100) |
+| `inspect` / `evictStale` | O(n) | n ≤ `maxEntries` |
+| Space | O(maxEntries + loads in flight) | The entity index holds one link per stored key |
+
+| Code / stat | Meaning | Caller action |
+| :--- | :--- | :--- |
+| `cache_stale` | Entry behind `minLedgerSequence` (evicted), without a ledger sequence, or older than `maxAgeMs` (kept) | Load from the source |
+| `cache_unauthorized` | `evictStale` called without `admin:recovery` | Ask a maintainer |
+| `stats().staleReads` | Reads refused as `cache_stale` | Alert if it climbs: a projection is lagging |
+| `stats().expirations` | Entries dropped for TTL, on read or by sweep | — |
+
+`cache.stale_evicted` telemetry records every `evictStale`, allowed or refused,
+with the cache name, role, reason and the stale reasons found.
+
+### Operational edge cases
+
+1. **Entries without a ledger sequence** (TOML files, fee stats) cannot prove
+   they are current, so a head-aware read gets `cache_stale`, but the entry is
+   kept for readers that did not ask.
+2. **Head regressions**: only an entry *behind* the head is evicted. A caller
+   passing a lower head than before simply accepts more entries.
+3. **Invalidation races**: `invalidateEntity` also cancels loads in flight for
+   that entity, even when nothing is stored for the key yet, so a response read
+   before the invalidation can never be stored after it.
+4. **Sweep coverage**: `sweepExpired` looks at the least recently used entries
+   first. Expired entries further up the list are found by later sweeps, read
+   expiry, or LRU eviction; memory stays bounded by `maxEntries` regardless.
+5. **Invalid input** fails fast with `RangeError`: a ledger sequence or age that
+   is not a non-negative safe integer, or a sweep bound below 1. A `NaN` ledger
+   sequence used to be stored and silently disabled the stale-write guard for
+   that key (found by the #359 property tests).
+6. **Unreadable timestamps**: the detector now reports an entry whose `cachedAt`
+   cannot be read as `ttl_expired` (its age is unknown) instead of passing it as
+   fresh forever.
+
+### Rollback and recovery
+
+- Every new path only removes projections, so the worst case of a wrong
+  eviction is one extra Horizon read. `evictStale` can be rerun safely: a second
+  pass finds nothing to do.
+- Contracts are preserved. `get(key)` with no options returns exactly the codes
+  it did before, `getOrLoad`'s third argument still accepts `CacheWriteOptions`,
+  and `stats()` only gains fields. The one tightening is that `set` now refuses
+  an invalid `ledgerSequence`. No caller in the repository passes one, and such a
+  write could only ever disable the guard. No migration is needed.
+- To roll back, revert `core/cache/bounded-cache.ts`. The cache lives in memory,
+  so a deploy starts it empty either way.

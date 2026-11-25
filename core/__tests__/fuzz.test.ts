@@ -11,6 +11,7 @@ import {
 } from "@/core/format/amount";
 import { canonicalize, createIdempotencyStore, requestDigest } from "@/core/idempotency/idempotency";
 import { parseJsonRpcResponse } from "@/core/rpc/client";
+import { prng } from "@/core/testing/property";
 
 /**
  * Fuzz coverage for malformed payloads and boundary numeric values (#268).
@@ -22,28 +23,6 @@ import { parseJsonRpcResponse } from "@/core/rpc/client";
  */
 const SEED = Number(process.env.FUZZ_SEED ?? 0x5eed_0268);
 const RUNS = 1_000;
-
-/** mulberry32: tiny, fast, and good enough to spread inputs. Not crypto. */
-function prng(seed: number) {
-  let state = seed >>> 0;
-  const next = () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 2 ** 32;
-  };
-  const int = (max: number) => Math.floor(next() * max);
-  const pick = <T>(items: readonly T[]): T => items[int(items.length)];
-  const string = (alphabet: string, maxLength: number) =>
-    Array.from({ length: int(maxLength + 1) }, () => alphabet[int(alphabet.length)]).join("");
-  /** Uniform over the full signed 64-bit range. */
-  const int64 = () => {
-    const high = BigInt(int(2 ** 32)) << 32n;
-    return BigInt.asIntN(64, high | BigInt(int(2 ** 32)));
-  };
-  return { next, int, pick, string, int64 };
-}
 
 const BOUNDARY_NUMBERS = [
   0, -0, 1, -1, 0.1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY,

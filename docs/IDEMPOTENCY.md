@@ -150,6 +150,13 @@ write throws `StalePreferencesVersionError` (`recipient`, `expectedVersion`,
 `actualVersion`) and storage is left unchanged. The caller re-reads, recomputes
 its patch and retries.
 
+`NotificationStore.publish` keeps its inbox contract and also writes
+`utix:notification-dedupe:v1:<recipient>` receipts (30-day TTL, 1,000 records
+per recipient by default). This prevents retries from recreating an alert just
+evicted from the bounded inbox. The additional key is additive; existing
+profiles treat it as empty. A storage-backed adapter can retain receipts across
+reloads; localStorage is not a cross-tab atomic claim store.
+
 ### Edge cases
 
 - **Cross-tab atomicity** is only as strong as `localStorage`. Browsers do not

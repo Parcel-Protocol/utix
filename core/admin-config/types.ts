@@ -23,7 +23,9 @@ export type AdminConfigErrorCode =
   | "admin_config_not_allowed"     // caller was not authorized
   | "admin_config_unknown_key"     // key is not a known admin config key
   | "admin_config_invalid_value"   // value fails validation for the key
-  | "admin_config_audit_rejected"; // audit trail refused the event; change not applied
+  | "admin_config_audit_rejected"  // audit trail refused the event; change not applied
+  | "admin_config_receipt_unavailable"
+  | "admin_config_receipt_failed";
 
 export interface AdminConfigInput {
   actor: AuditActor;

@@ -1,265 +1,328 @@
 import { describe, expect, it } from "vitest";
+import { err, ok } from "@/core/result/result";
 import {
   createIdempotencyStore,
-  type IdempotencyRecord,
-  type IdempotencyStore
+  isValidIdempotencyKey,
+  withIdempotency
 } from "@/core/idempotency/idempotency";
+import { runDuplicateSubmissionScenario } from "../duplicate-submission";
 
-describe("Concurrency - Duplicate Submissions and Stale Versions", () => {
+const OPERATION = "submit:transfer";
+const MAINTAINER = { role: "maintainer" } as const;
+
+function storeAt(start: number, ttlMs?: number) {
+  let clock = start;
+  const store = createIdempotencyStore({ now: () => clock, ...(ttlMs ? { ttlMs } : {}) });
+  return { store, advance: (ms: number) => { clock += ms; } };
+}
+
+describe("Concurrency — duplicate submissions and stale versions (#456)", () => {
   describe("Duplicate submission detection", () => {
-    it("detects identical submissions with same idempotency key", async () => {
-      const store = createIdempotencyStore();
+    it("detects identical submissions with the same idempotency key", async () => {
+      const { store } = storeAt(0);
+      const request = { amount: 100 };
+      let runs = 0;
 
-      const result1 = store.record("payment-key-1", { amount: 100 });
-      expect(result1.ok).toBe(true);
-      expect(result1.replayed).toBe(false);
+      const first = await withIdempotency(store, {
+        key: "payment-key-1",
+        operation: OPERATION,
+        request,
+        run: () => {
+          runs += 1;
+          return ok({ amount: 100 });
+        }
+      });
+      const second = await withIdempotency(store, {
+        key: "payment-key-1",
+        operation: OPERATION,
+        request,
+        run: () => {
+          runs += 1;
+          return ok({ amount: 100 });
+        }
+      });
 
-      const result2 = store.record("payment-key-1", { amount: 100 });
-      expect(result2.ok).toBe(true);
-      expect(result2.replayed).toBe(true);
+      expect(first.ok).toBe(true);
+      if (first.ok) expect(first.value.replayed).toBe(false);
+      expect(second.ok).toBe(true);
+      if (second.ok) {
+        expect(second.value.replayed).toBe(true);
+        expect(second.value.value).toEqual({ amount: 100 });
+      }
+      expect(runs).toBe(1);
     });
 
-    it("prevents duplicate submission within TTL window", () => {
-      const store = createIdempotencyStore();
-      const now = new Date("2026-01-01T00:00:00.000Z").getTime();
+    it("prevents a duplicate inside the TTL window", async () => {
+      const { store, advance } = storeAt(0);
+      const options = { key: "ttl-window", operation: OPERATION, request: { amount: 50 } };
+      await withIdempotency(store, { ...options, run: () => ok("done") });
+      advance(60 * 60 * 1000);
+      const replay = await withIdempotency(store, { ...options, run: () => ok("done") });
 
-      const result1 = store.record("key-1", { operation: "transfer", amount: 50 });
-      expect(result1.ok).toBe(true);
-
-      const result2 = store.record("key-1", { operation: "transfer", amount: 50 });
-      expect(result2.ok).toBe(true);
-      expect(result2.replayed).toBe(true);
+      expect(replay.ok).toBe(true);
+      if (replay.ok) expect(replay.value.replayed).toBe(true);
     });
 
-    it("detects concurrent submissions of same request", () => {
-      const store = createIdempotencyStore();
+    it("detects concurrent submissions of the same request", async () => {
+      const { store } = storeAt(0);
+      let runs = 0;
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          withIdempotency(store, {
+            key: "concurrent-key",
+            operation: OPERATION,
+            request: { operation: "mint" },
+            run: () => {
+              runs += 1;
+              return ok("minted");
+            }
+          })
+        )
+      );
 
-      const submission1 = store.record("concurrent-key", { operation: "mint" });
-      expect(submission1.ok).toBe(true);
+      expect(runs).toBe(1);
+      expect(results.filter((result) => result.ok).length).toBe(1);
+      expect(results.filter((result) => !result.ok).length).toBe(4);
 
-      const submission2 = store.record("concurrent-key", { operation: "mint" });
-      expect(submission2.ok).toBe(true);
-      expect(submission2.replayed).toBe(true);
+      const late = await withIdempotency(store, {
+        key: "concurrent-key",
+        operation: OPERATION,
+        request: { operation: "mint" },
+        run: () => ok("minted")
+      });
+      expect(late.ok).toBe(true);
+      if (late.ok) expect(late.value.replayed).toBe(true);
     });
 
-    it("allows different keys for different submissions", () => {
-      const store = createIdempotencyStore();
+    it("allows different keys for different submissions", async () => {
+      const { store } = storeAt(0);
+      const first = await withIdempotency(store, {
+        key: "key-1",
+        operation: OPERATION,
+        request: { amount: 100 },
+        run: () => ok("a")
+      });
+      const second = await withIdempotency(store, {
+        key: "key-2",
+        operation: OPERATION,
+        request: { amount: 100 },
+        run: () => ok("b")
+      });
 
-      const result1 = store.record("key-1", { amount: 100 });
-      expect(result1.ok).toBe(true);
-
-      const result2 = store.record("key-2", { amount: 100 });
-      expect(result2.ok).toBe(true);
-      expect(result2.replayed).toBe(false);
+      expect(first.ok && second.ok).toBe(true);
+      if (first.ok && second.ok) {
+        expect(first.value.replayed).toBe(false);
+        expect(second.value.replayed).toBe(false);
+        expect(first.value.value).not.toBe(second.value.value);
+      }
     });
 
-    it("rejects duplicate keys with conflicting payloads", () => {
-      const store = createIdempotencyStore();
+    it("rejects duplicate keys with conflicting payloads", async () => {
+      const { store } = storeAt(0);
+      const first = await withIdempotency(store, {
+        key: "conflict-key",
+        operation: OPERATION,
+        request: { amount: 100 },
+        run: () => ok("first")
+      });
+      const second = await withIdempotency(store, {
+        key: "conflict-key",
+        operation: OPERATION,
+        request: { amount: 200 },
+        run: () => ok("second")
+      });
 
-      const result1 = store.record("conflict-key", { amount: 100 });
-      expect(result1.ok).toBe(true);
-
-      const result2 = store.record("conflict-key", { amount: 200 });
-      expect(result2.ok).toBe(false);
-      expect(result2.error).toBe("idempotency_key_conflict");
+      expect(first.ok).toBe(true);
+      expect(second.ok).toBe(false);
+      if (!second.ok) expect(second.code).toBe("idempotency_key_conflict");
     });
   });
 
   describe("Stale version handling", () => {
-    it("tracks version for optimistic concurrency control", () => {
-      const store = createIdempotencyStore();
+    it("treats an expired key as stale instead of replaying it", async () => {
+      const { store, advance } = storeAt(0, 1000);
+      const options = { key: "stale-key", operation: OPERATION, request: { version: 1 } };
+      const first = await withIdempotency(store, { ...options, run: () => ok("v1") });
+      expect(first.ok).toBe(true);
 
-      const record1 = store.record("version-key-1", { status: "draft", version: 1 });
-      expect(record1.ok).toBe(true);
-
-      const record2 = store.record("version-key-2", { status: "draft", version: 1 });
-      expect(record2.ok).toBe(true);
+      advance(1001);
+      const stale = await withIdempotency(store, { ...options, run: () => ok("v1") });
+      expect(stale.ok).toBe(false);
+      if (!stale.ok) expect(stale.code).toBe("idempotency_key_expired");
     });
 
-    it("detects stale submissions with old version", () => {
-      const store = createIdempotencyStore();
+    it("allows a corrected retry on a fresh key", async () => {
+      const { store } = storeAt(0);
+      const first = await withIdempotency(store, {
+        key: "version-key-1",
+        operation: OPERATION,
+        request: { status: "draft", version: 1 },
+        run: () => ok("v1")
+      });
+      const next = await withIdempotency(store, {
+        key: "version-key-2",
+        operation: OPERATION,
+        request: { status: "draft", version: 2 },
+        run: () => ok("v2")
+      });
 
-      store.record("stale-key", { resource: "ticket-1", version: 1 });
-
-      const staleAttempt = store.record("stale-key-2", { resource: "ticket-1", version: 0 });
-      expect(staleAttempt.ok).toBe(true);
-    });
-
-    it("allows updates to newer versions", () => {
-      const store = createIdempotencyStore();
-
-      const v1 = store.record("version-track", { version: 1, data: "v1" });
-      expect(v1.ok).toBe(true);
-
-      const v2 = store.record("version-track-2", { version: 2, data: "v2" });
-      expect(v2.ok).toBe(true);
+      expect(first.ok).toBe(true);
+      expect(next.ok).toBe(true);
+      if (next.ok) expect(next.value.value).toBe("v2");
     });
   });
 
   describe("Race condition tests", () => {
-    it("handles near-simultaneous submissions", () => {
-      const store = createIdempotencyStore();
-      const results = [];
+    it("handles near-simultaneous submissions on different keys", async () => {
+      const { store } = storeAt(0);
+      const results = await Promise.all(
+        Array.from({ length: 10 }, (_, index) =>
+          withIdempotency(store, {
+            key: `parallel-${index}`,
+            operation: OPERATION,
+            request: { id: index },
+            run: () => ok(index)
+          })
+        )
+      );
 
-      for (let i = 0; i < 5; i++) {
-        const result = store.record("race-key", { attempt: i });
-        results.push(result);
-      }
-
-      const successful = results.filter((r) => r.ok === true);
-      expect(successful.length).toBeGreaterThan(0);
+      expect(results.every((result) => result.ok)).toBe(true);
     });
 
-    it("maintains consistency during parallel operations", () => {
-      const store = createIdempotencyStore();
-      const operations = [];
+    it("executes once under high contention", async () => {
+      const { store } = storeAt(0);
+      let runs = 0;
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          withIdempotency(store, {
+            key: "high-contention",
+            operation: OPERATION,
+            request: { amount: 100 },
+            run: () => {
+              runs += 1;
+              return ok("settled");
+            }
+          })
+        )
+      );
 
-      for (let i = 0; i < 10; i++) {
-        operations.push(store.record(`parallel-${i}`, { id: i }));
-      }
-
-      const allSuccessful = operations.every((op) => op.ok === true);
-      expect(allSuccessful).toBe(true);
-    });
-
-    it("detects conflicts in high-contention scenarios", () => {
-      const store = createIdempotencyStore();
-
-      const result1 = store.record("high-contention", { amount: 100 });
-      const result2 = store.record("high-contention", { amount: 100 });
-      const result3 = store.record("high-contention", { amount: 100 });
-
-      expect(result1.ok).toBe(true);
-      expect(result2.ok).toBe(true);
-      expect(result2.replayed).toBe(true);
-      expect(result3.ok).toBe(true);
-      expect(result3.replayed).toBe(true);
-    });
-
-    it("handles deduplication during concurrent flow", () => {
-      const store = createIdempotencyStore();
-
-      const initial = store.record("dedupe-key", { flow: "transfer", receiver: "bob" });
-      expect(initial.ok).toBe(true);
-
-      const retry1 = store.record("dedupe-key", { flow: "transfer", receiver: "bob" });
-      expect(retry1.replayed).toBe(true);
-
-      const retry2 = store.record("dedupe-key", { flow: "transfer", receiver: "bob" });
-      expect(retry2.replayed).toBe(true);
-
-      expect(retry1.record?.value.flow).toBe("transfer");
-    });
-  });
-
-  describe("Normal deduplication flow", () => {
-    it("records submission and returns outcome on replay", () => {
-      const store = createIdempotencyStore();
-
-      const initial = store.record("normal-key", { action: "create_ticket" });
-      expect(initial.ok).toBe(true);
-      expect(initial.replayed).toBe(false);
-
-      const replayed = store.record("normal-key", { action: "create_ticket" });
-      expect(replayed.ok).toBe(true);
-      expect(replayed.replayed).toBe(true);
-      expect(replayed.record?.value).toEqual({ action: "create_ticket" });
-    });
-
-    it("prevents duplicate submissions across retries", () => {
-      const store = createIdempotencyStore();
-
-      const attempt1 = store.record("retry-key", { payload: "data" });
-      expect(attempt1.ok).toBe(true);
-
-      const attempt2 = store.record("retry-key", { payload: "data" });
-      expect(attempt2.replayed).toBe(true);
-
-      const attempt3 = store.record("retry-key", { payload: "data" });
-      expect(attempt3.replayed).toBe(true);
-    });
-
-    it("maintains request order and consistency", () => {
-      const store = createIdempotencyStore();
-      const keys = ["req-1", "req-2", "req-3", "req-4"];
-
-      keys.forEach((key) => {
-        const result = store.record(key, { order: keys.indexOf(key) + 1 });
-        expect(result.ok).toBe(true);
-      });
-
-      const recorded = keys.map((key) => store.record(key, { order: keys.indexOf(key) + 1 }));
-      recorded.forEach((r) => {
-        expect(r.replayed).toBe(true);
-      });
+      expect(runs).toBe(1);
+      expect(results.filter((result) => result.ok).length).toBe(1);
     });
   });
 
   describe("Authorization paths for deduplication", () => {
-    it("respects ownership in deduplication", () => {
-      const store = createIdempotencyStore();
+    it("does not let an unauthorized actor consume a key", async () => {
+      const { store } = storeAt(0);
+      const denied = await runDuplicateSubmissionScenario<string>({
+        store,
+        key: "alice-key",
+        operation: OPERATION,
+        request: { owner: "alice" },
+        actor: { role: "viewer" },
+        run: () => ok("alice")
+      });
 
-      const alice = store.record("alice-key", { owner: "alice", action: "transfer" });
-      expect(alice.ok).toBe(true);
+      expect(denied.authorized).toBe(false);
+      expect(denied.executions).toBe(0);
 
-      const bob = store.record("bob-key", { owner: "bob", action: "transfer" });
-      expect(bob.ok).toBe(true);
-
-      const aliceRetry = store.record("alice-key", { owner: "alice", action: "transfer" });
-      expect(aliceRetry.replayed).toBe(true);
+      const allowed = await runDuplicateSubmissionScenario<string>({
+        store,
+        key: "alice-key",
+        operation: OPERATION,
+        request: { owner: "alice" },
+        actor: MAINTAINER,
+        run: () => ok("alice")
+      });
+      expect(allowed.authorized).toBe(true);
+      expect(allowed.executions).toBe(1);
     });
 
-    it("prevents cross-user deduplication", () => {
-      const store = createIdempotencyStore();
+    it("rejects a conflicting owner on a claimed key", async () => {
+      const { store } = storeAt(0);
+      const first = await withIdempotency(store, {
+        key: "shared-key",
+        operation: OPERATION,
+        request: { owner: "alice" },
+        run: () => ok("alice")
+      });
+      const second = await withIdempotency(store, {
+        key: "shared-key",
+        operation: OPERATION,
+        request: { owner: "bob" },
+        run: () => ok("bob")
+      });
 
-      const userA = store.record("shared-key", { owner: "alice" });
-      expect(userA.ok).toBe(true);
-
-      const userB = store.record("shared-key", { owner: "bob" });
-      expect(userB.ok).toBe(false);
+      expect(first.ok).toBe(true);
+      expect(second.ok).toBe(false);
+      if (!second.ok) expect(second.code).toBe("idempotency_key_conflict");
     });
   });
 
   describe("Failure modes", () => {
-    it("handles invalid idempotency keys", () => {
-      const store = createIdempotencyStore();
+    it("handles invalid idempotency keys", async () => {
+      const { store } = storeAt(0);
+      expect(isValidIdempotencyKey("")).toBe(false);
+      const result = await withIdempotency(store, {
+        key: "",
+        operation: OPERATION,
+        run: () => ok("never")
+      });
 
-      const validKey = store.record("valid-key", { data: "test" });
-      expect(validKey.ok).toBe(true);
-
-      const emptyKey = store.record("", { data: "test" });
-      expect(emptyKey.ok).toBeFalsy();
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("idempotency_key_invalid");
     });
 
-    it("handles malformed payloads gracefully", () => {
-      const store = createIdempotencyStore();
+    it("replays a recorded failure instead of repeating the side effect", async () => {
+      const { store } = storeAt(0);
+      let runs = 0;
+      const options = { key: "failed-key", operation: OPERATION, request: { amount: 1 } };
 
-      const result1 = store.record("malformed-key", { valid: true });
-      expect(result1.ok).toBe(true);
+      const first = await withIdempotency(store, {
+        ...options,
+        run: () => {
+          runs += 1;
+          return err("upstream_failed");
+        }
+      });
+      const retry = await withIdempotency(store, {
+        ...options,
+        run: () => {
+          runs += 1;
+          return ok("unexpected");
+        }
+      });
 
-      const result2 = store.record("malformed-key", null);
-      expect(result2.ok).toBeFalsy();
+      expect(first.ok).toBe(false);
+      expect(retry.ok).toBe(false);
+      expect(runs).toBe(1);
+      if (!retry.ok) expect(retry.code).toBe("upstream_failed");
     });
 
-    it("detects and rejects conflicting duplicate submissions", () => {
-      const store = createIdempotencyStore();
+    it("releases a stuck claim so a corrected retry can reuse the key", async () => {
+      const { store } = storeAt(0);
+      const begun = store.begin({ key: "stuck-key", operation: OPERATION, request: { amount: 1 } });
+      expect(begun.ok).toBe(true);
 
-      const first = store.record("conflict-key", { amount: 50, currency: "USD" });
-      expect(first.ok).toBe(true);
+      const blocked = await withIdempotency(store, {
+        key: "stuck-key",
+        operation: OPERATION,
+        request: { amount: 1 },
+        run: () => ok("never")
+      });
+      expect(blocked.ok).toBe(false);
+      if (!blocked.ok) expect(blocked.code).toBe("idempotency_in_flight");
 
-      const second = store.record("conflict-key", { amount: 75, currency: "EUR" });
-      expect(second.ok).toBe(false);
-      expect(second.error).toBe("idempotency_key_conflict");
-    });
-
-    it("expires old submissions per TTL policy", () => {
-      const store = createIdempotencyStore();
-
-      const old = store.record("ttl-key", { timestamp: "2025-01-01" });
-      expect(old.ok).toBe(true);
-
-      const newSubmission = store.record("ttl-key", { timestamp: "2025-01-01" });
-      expect(newSubmission.ok).toBe(true);
+      const released = store.abandon("stuck-key");
+      expect(released.ok).toBe(true);
+      const retry = await withIdempotency(store, {
+        key: "stuck-key",
+        operation: OPERATION,
+        request: { amount: 1 },
+        run: () => ok("recovered")
+      });
+      expect(retry.ok).toBe(true);
+      if (retry.ok) expect(retry.value.replayed).toBe(false);
     });
   });
 });

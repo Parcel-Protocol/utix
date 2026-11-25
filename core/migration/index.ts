@@ -4,3 +4,4 @@ export * from './runner';
 export * from './backfill';
 export * from './storage-schema';
 export * from './release-readiness';
+export * from './plan-checks';

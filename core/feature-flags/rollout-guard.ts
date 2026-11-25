@@ -14,10 +14,16 @@
  */
 
 import { recordAudit } from "@/core/audit/audit";
+import type { AuthContext } from "@/core/auth/middleware";
+import { hasPermission } from "@/core/auth/types";
+import { err, ok, type Result } from "@/core/result/result";
 import {
+  clearEmergencyDisable,
   configureRollout,
+  getEmergencyDisableRecord,
   isFeatureEnabled,
   triggerEmergencyDisable,
+  type EmergencyDisableRecord,
   type FeatureFlag,
   type RolloutConfig,
   type RolloutContext
@@ -282,4 +288,90 @@ export function createRolloutGuard<T = unknown>(
   options?: RolloutGuardOptions<T>
 ): RolloutGuard<T> {
   return new RolloutGuard<T>(scope, options);
+}
+
+// ---------------------------------------------------------------------------
+// Authorized emergency disablement (#458)
+//
+// `triggerEmergencyDisable` / `clearEmergencyDisable` stay as unguarded
+// in-process primitives (used by the automated guard above). Operator-facing
+// paths go through these wrappers, which add authorization, a mandatory
+// reason, idempotent retries and an audit record for every attempt.
+// ---------------------------------------------------------------------------
+
+export type EmergencyDisableError = "permission_denied" | "reason_required";
+
+export interface EmergencyDisableOutcome {
+  readonly record: EmergencyDisableRecord;
+  /** True when the flag was already disabled; the original record is kept. */
+  readonly alreadyActive: boolean;
+}
+
+function canOperateKillSwitch(auth: AuthContext): boolean {
+  return hasPermission(auth.role, "admin:config") || hasPermission(auth.role, "admin:recovery");
+}
+
+function auditKillSwitch(
+  flag: FeatureFlag,
+  auth: AuthContext,
+  op: "disable" | "clear",
+  outcome: "allowed" | "denied",
+  reason?: string,
+  errorCode?: string
+): void {
+  recordAudit({
+    action: "admin.config_changed",
+    actor: { kind: auth.role === "maintainer" ? "maintainer" : "system", id: auth.userId ?? auth.role },
+    scope: "maintainer",
+    target: { kind: "feature_flag", id: flag },
+    reason: reason ?? `emergency_${op}`,
+    outcome,
+    errorCode,
+    after: { op, flag }
+  });
+}
+
+/**
+ * Disables `flag` immediately on behalf of an operator. Retrying an already
+ * active disable is a no-op that returns the original record, so a retried
+ * request never rewrites who triggered it or when.
+ */
+export function authorizedEmergencyDisable(
+  flag: FeatureFlag,
+  auth: AuthContext,
+  options: { reason: string; now?: number | Date }
+): Result<EmergencyDisableOutcome, EmergencyDisableError> {
+  if (!canOperateKillSwitch(auth)) {
+    auditKillSwitch(flag, auth, "disable", "denied", options.reason, "permission_denied");
+    return err("permission_denied");
+  }
+  const reason = options.reason?.trim();
+  if (!reason) return err("reason_required");
+
+  const existing = getEmergencyDisableRecord(flag);
+  if (existing) return ok({ record: existing, alreadyActive: true });
+
+  triggerEmergencyDisable(flag, { reason, actor: auth.userId ?? auth.role, now: options.now });
+  auditKillSwitch(flag, auth, "disable", "allowed", reason);
+  return ok({ record: getEmergencyDisableRecord(flag)!, alreadyActive: false });
+}
+
+/**
+ * Re-enables `flag` after an emergency disable (the rollback of a rollback).
+ * Clearing a flag that is not disabled succeeds and reports `false`.
+ */
+export function authorizedClearEmergencyDisable(
+  flag: FeatureFlag,
+  auth: AuthContext
+): Result<boolean, "permission_denied"> {
+  if (!canOperateKillSwitch(auth)) {
+    auditKillSwitch(flag, auth, "clear", "denied", undefined, "permission_denied");
+    return err("permission_denied");
+  }
+  const wasActive = getEmergencyDisableRecord(flag) !== null;
+  if (wasActive) {
+    clearEmergencyDisable(flag);
+    auditKillSwitch(flag, auth, "clear", "allowed");
+  }
+  return ok(wasActive);
 }

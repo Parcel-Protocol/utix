@@ -18,7 +18,23 @@ export type RepairAction =
   | "evict"
   | "reindex"
   | "resync"
+  | "restore"
   | "queue_repair_job";
+
+export interface RepairPreview {
+  readonly previewId: string;
+  readonly targetKey: string;
+  readonly kind: "cache" | "index";
+  readonly action: RepairAction;
+  readonly staleReason: StaleReason;
+  readonly riskLevel: "low" | "medium" | "high";
+  readonly reversibility: "reversible" | "partially_reversible" | "irreversible";
+  readonly scope: "single" | "partition" | "full";
+  readonly predictedEffect: string;
+  readonly rollbackSupported: boolean;
+  readonly backupSnapshot?: CacheEntry | IndexEntry;
+  readonly previewDigest: string;
+}
 
 export interface CacheEntry<T = unknown> {
   readonly key: string;
@@ -91,4 +107,7 @@ export interface RepairResult {
   readonly timestamp: string;
   readonly message: string;
   readonly evidence: Record<string, unknown>;
+  readonly retryable?: boolean;
+  readonly errorCode?: string;
+  readonly rollbackSupported?: boolean;
 }

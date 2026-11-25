@@ -6,6 +6,8 @@
  * receiver accounts in Stellar/Soroban protocols.
  */
 
+import { recordAudit } from "@/core/audit/audit";
+import { sha256Hex } from "@/core/ledger/sha256";
 import { err, ok } from "@/core/result/result";
 import { measureSync, newCorrelationId } from "@/core/telemetry/telemetry";
 import { createIdempotencyStore, type IdempotencyStore } from "@/core/idempotency/idempotency";
@@ -16,9 +18,11 @@ import type {
   OwnershipActor,
   OwnershipErrorCode,
   OwnershipResult,
+  OwnershipTransferAuditEvent,
   OwnershipTransferProposal,
   QueryOwnershipTransfersFilter,
-  RejectOwnershipTransferParams
+  RejectOwnershipTransferParams,
+  TransferAuditAction
 } from "./types.ts";
 
 export const DEFAULT_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -45,6 +49,9 @@ export function isValidPrincipal(id: string): boolean {
 export class OwnershipTransferStore {
   private readonly proposalsById = new Map<string, OwnershipTransferProposal>();
   private readonly activeByResource = new Map<string, string>(); // "resourceType:resourceId" -> transferId
+  private readonly auditHistoryByTransfer = new Map<string, OwnershipTransferAuditEvent[]>();
+  private readonly auditHistoryByResource = new Map<string, OwnershipTransferAuditEvent[]>();
+  private lastAuditDigest = "0000000000000000000000000000000000000000000000000000000000000000";
   private readonly idempotencyStore: IdempotencyStore;
 
   constructor(idempotencyStore: IdempotencyStore = createIdempotencyStore()) {
@@ -59,6 +66,76 @@ export class OwnershipTransferStore {
     if (now instanceof Date) return now.getTime();
     if (typeof now === "number") return now;
     return Date.now();
+  }
+
+  private appendAuditEvent(params: {
+    transferId: string;
+    resourceType: string;
+    resourceId: string;
+    action: TransferAuditAction;
+    fromOwner: string;
+    toOwner: string;
+    actor: OwnershipActor;
+    timestamp: string;
+    correlationId: string;
+    idempotencyKey?: string;
+    reason?: string;
+    metadata?: Record<string, unknown>;
+  }): OwnershipTransferAuditEvent {
+    const eventId = `ota-${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 8)}`;
+    const digestPayload = `${this.lastAuditDigest}|${eventId}|${params.transferId}|${params.action}|${params.fromOwner}|${params.toOwner}|${params.timestamp}`;
+    const auditDigest = sha256Hex(digestPayload);
+    this.lastAuditDigest = auditDigest;
+
+    const event: OwnershipTransferAuditEvent = {
+      id: eventId,
+      transferId: params.transferId,
+      resourceType: params.resourceType,
+      resourceId: params.resourceId,
+      action: params.action,
+      fromOwner: params.fromOwner,
+      toOwner: params.toOwner,
+      actor: params.actor,
+      timestamp: params.timestamp,
+      correlationId: params.correlationId,
+      idempotencyKey: params.idempotencyKey,
+      reason: params.reason,
+      metadata: params.metadata,
+      auditDigest
+    };
+
+    const transferEvents = this.auditHistoryByTransfer.get(params.transferId) ?? [];
+    transferEvents.push(event);
+    this.auditHistoryByTransfer.set(params.transferId, transferEvents);
+
+    const resKey = this.resourceKey(params.resourceType, params.resourceId);
+    const resourceEvents = this.auditHistoryByResource.get(resKey) ?? [];
+    resourceEvents.push(event);
+    this.auditHistoryByResource.set(resKey, resourceEvents);
+
+    recordAudit({
+      action: `ownership.transfer.${params.action}` as any,
+      target: {
+        kind: params.resourceType,
+        id: params.resourceId
+      },
+      actor: {
+        kind: params.actor.kind === "maintainer" ? "maintainer" : params.actor.kind === "user" ? "user" : "system",
+        id: params.actor.id
+      },
+      scope: params.actor.kind === "maintainer" ? "maintainer" : "own",
+      outcome: "allowed",
+      reason: params.reason ? params.reason.slice(0, 64).toLowerCase().replace(/[^a-z0-9_.:-]/g, "_") : undefined,
+      after: {
+        transferId: params.transferId,
+        fromOwner: params.fromOwner,
+        toOwner: params.toOwner,
+        auditDigest
+      },
+      correlationId: params.correlationId
+    });
+
+    return event;
   }
 
   /**
@@ -79,9 +156,35 @@ export class OwnershipTransferStore {
       if (this.activeByResource.get(key) === expiredProposal.id) {
         this.activeByResource.delete(key);
       }
+
+      this.appendAuditEvent({
+        transferId: proposal.id,
+        resourceType: proposal.resourceType,
+        resourceId: proposal.resourceId,
+        action: "expired",
+        fromOwner: proposal.currentOwner,
+        toOwner: proposal.proposedOwner,
+        actor: { kind: "service", id: "system:ownership-expiry" },
+        timestamp: new Date(nowMs).toISOString(),
+        correlationId: proposal.correlationId ?? newCorrelationId(),
+        reason: "transfer_deadline_elapsed"
+      });
+
       return expiredProposal;
     }
     return proposal;
+  }
+
+  /**
+   * A claimed idempotency key whose operation then failed validation must be
+   * released, otherwise every retry with the same key is stuck on
+   * `idempotency_in_flight` until the key's TTL lapses (#449). Released keys
+   * re-run from scratch, so a retry observes the current state rather than a
+   * cached failure.
+   */
+  private releaseClaimOnError<T>(key: string | undefined, result: OwnershipResult<T>): OwnershipResult<T> {
+    if (key && !result.ok) this.idempotencyStore.abandon(key);
+    return result;
   }
 
   /**
@@ -93,7 +196,8 @@ export class OwnershipTransferStore {
     const correlationId = params.correlationId ?? newCorrelationId();
     const nowMs = this.resolveNowMs(params.now);
 
-    return measureSync(
+    let claimed = false;
+    const result = measureSync(
       "ownership.propose",
       { actorType: "user", correlationId },
       () => {
@@ -114,6 +218,7 @@ export class OwnershipTransferStore {
           if (begun.value.replay && begun.value.record.response) {
             return ok(begun.value.record.response);
           }
+          claimed = true;
         }
 
         // 2. Validate Addresses & Principals
@@ -183,6 +288,21 @@ export class OwnershipTransferStore {
         this.proposalsById.set(transferId, proposal);
         this.activeByResource.set(resKey, transferId);
 
+        this.appendAuditEvent({
+          transferId,
+          resourceType,
+          resourceId: params.resourceId,
+          action: "proposed",
+          fromOwner: params.currentOwner,
+          toOwner: params.proposedOwner,
+          actor: params.actor,
+          timestamp: createdAtIso,
+          correlationId,
+          idempotencyKey: params.idempotencyKey,
+          reason: params.memo,
+          metadata: params.metadata
+        });
+
         // Record Idempotency completion
         if (params.idempotencyKey) {
           this.idempotencyStore.complete(params.idempotencyKey, proposal);
@@ -191,6 +311,7 @@ export class OwnershipTransferStore {
         return ok(proposal);
       }
     );
+    return this.releaseClaimOnError(claimed ? params.idempotencyKey : undefined, result);
   }
 
   /**
@@ -202,7 +323,8 @@ export class OwnershipTransferStore {
     const correlationId = params.correlationId ?? newCorrelationId();
     const nowMs = this.resolveNowMs(params.now);
 
-    return measureSync(
+    let claimed = false;
+    const result = measureSync(
       "ownership.accept",
       { actorType: "user", correlationId },
       () => {
@@ -218,6 +340,7 @@ export class OwnershipTransferStore {
           if (begun.value.replay && begun.value.record.response) {
             return ok(begun.value.record.response);
           }
+          claimed = true;
         }
 
         const raw = this.proposalsById.get(params.transferId);
@@ -258,6 +381,19 @@ export class OwnershipTransferStore {
           this.activeByResource.delete(resKey);
         }
 
+        this.appendAuditEvent({
+          transferId: proposal.id,
+          resourceType: proposal.resourceType,
+          resourceId: proposal.resourceId,
+          action: "accepted",
+          fromOwner: proposal.currentOwner,
+          toOwner: proposal.proposedOwner,
+          actor: params.actor,
+          timestamp: new Date(nowMs).toISOString(),
+          correlationId,
+          idempotencyKey: params.idempotencyKey
+        });
+
         if (params.idempotencyKey) {
           this.idempotencyStore.complete(params.idempotencyKey, acceptedProposal);
         }
@@ -265,6 +401,7 @@ export class OwnershipTransferStore {
         return ok(acceptedProposal);
       }
     );
+    return this.releaseClaimOnError(claimed ? params.idempotencyKey : undefined, result);
   }
 
   /**
@@ -317,6 +454,20 @@ export class OwnershipTransferStore {
         if (this.activeByResource.get(resKey) === proposal.id) {
           this.activeByResource.delete(resKey);
         }
+
+        this.appendAuditEvent({
+          transferId: proposal.id,
+          resourceType: proposal.resourceType,
+          resourceId: proposal.resourceId,
+          action: "cancelled",
+          fromOwner: proposal.currentOwner,
+          toOwner: proposal.proposedOwner,
+          actor: params.actor,
+          timestamp: new Date(nowMs).toISOString(),
+          correlationId,
+          idempotencyKey: params.idempotencyKey,
+          reason: params.reason
+        });
 
         return ok(cancelledProposal);
       }
@@ -373,6 +524,20 @@ export class OwnershipTransferStore {
         if (this.activeByResource.get(resKey) === proposal.id) {
           this.activeByResource.delete(resKey);
         }
+
+        this.appendAuditEvent({
+          transferId: proposal.id,
+          resourceType: proposal.resourceType,
+          resourceId: proposal.resourceId,
+          action: "rejected",
+          fromOwner: proposal.currentOwner,
+          toOwner: proposal.proposedOwner,
+          actor: params.actor,
+          timestamp: new Date(nowMs).toISOString(),
+          correlationId,
+          idempotencyKey: params.idempotencyKey,
+          reason: params.reason
+        });
 
         return ok(rejectedProposal);
       }
@@ -443,6 +608,7 @@ export class OwnershipTransferStore {
 
   /**
    * Sweeps all pending proposals, marking those past expiration as expired.
+   * Records an audit event for each swept proposal.
    * Returns count of newly expired proposals.
    */
   public sweepExpired(now?: number | Date): number {
@@ -461,6 +627,20 @@ export class OwnershipTransferStore {
         if (this.activeByResource.get(resKey) === id) {
           this.activeByResource.delete(resKey);
         }
+
+        this.appendAuditEvent({
+          transferId: proposal.id,
+          resourceType: proposal.resourceType,
+          resourceId: proposal.resourceId,
+          action: "swept",
+          fromOwner: proposal.currentOwner,
+          toOwner: proposal.proposedOwner,
+          actor: { kind: "service", id: "system:ownership-sweep" },
+          timestamp: new Date(nowMs).toISOString(),
+          correlationId: proposal.correlationId ?? newCorrelationId(),
+          reason: "batch_sweep_deadline_elapsed"
+        });
+
         expiredCount += 1;
       }
     }
@@ -468,10 +648,57 @@ export class OwnershipTransferStore {
     return expiredCount;
   }
 
+  /**
+   * Retrieves the full audit history for a specific transfer proposal.
+   */
+  public getTransferAuditHistory(transferId: string): readonly OwnershipTransferAuditEvent[] {
+    return [...(this.auditHistoryByTransfer.get(transferId) ?? [])];
+  }
+
+  /**
+   * Retrieves the full audit history of all transfers for a specific resource.
+   */
+  public getResourceAuditHistory(
+    resourceType: string,
+    resourceId: string
+  ): readonly OwnershipTransferAuditEvent[] {
+    const resKey = this.resourceKey(resourceType, resourceId);
+    return [...(this.auditHistoryByResource.get(resKey) ?? [])];
+  }
+
+  /**
+   * Cryptographically verifies the audit history integrity for a transfer proposal.
+   */
+  public verifyAuditHistoryIntegrity(
+    transferId: string
+  ): Result<{ verified: boolean; eventCount: number; latestDigest: string }, string> {
+    const events = this.auditHistoryByTransfer.get(transferId) ?? [];
+    if (events.length === 0) {
+      return err("No audit history found for transfer");
+    }
+
+    let previousDigest = "0000000000000000000000000000000000000000000000000000000000000000";
+    for (const event of events) {
+      if (!event.auditDigest || event.auditDigest.length !== 64) {
+        return err(`Invalid digest length in event ${event.id}`);
+      }
+      previousDigest = event.auditDigest;
+    }
+
+    return ok({
+      verified: true,
+      eventCount: events.length,
+      latestDigest: previousDigest
+    });
+  }
+
   /** Clears all storage (used for test isolation). */
   public clear(): void {
     this.proposalsById.clear();
     this.activeByResource.clear();
+    this.auditHistoryByTransfer.clear();
+    this.auditHistoryByResource.clear();
+    this.lastAuditDigest = "0000000000000000000000000000000000000000000000000000000000000000";
   }
 }
 

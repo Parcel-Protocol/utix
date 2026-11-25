@@ -22,6 +22,7 @@
 
 import { err, ok, type Result } from "@/core/result/result";
 import type { HealthIndicator, HealthStatus } from "@/core/health/types";
+import type { DependencyState } from "@/core/dependencies/degradation";
 import {
   COMPONENT_STATUSES,
   INCIDENT_IMPACTS,
@@ -108,6 +109,27 @@ export function componentFromHealthIndicator(
     status: HEALTH_TO_COMPONENT[indicator.status],
     visibility: published ? "public" : "internal",
     diagnostics: { message: indicator.message, ...indicator.details }
+  };
+}
+
+/**
+ * Maps tracked dependency health to public status. Callers must explicitly
+ * provide a public id/name; dependency ids and diagnostics stay private by
+ * default, while the published feed exposes only the coarse status enum.
+ */
+export function componentFromDependencyState(
+  state: DependencyState,
+  published?: { readonly id: string; readonly name: string }
+): TrustedComponent {
+  const status: ComponentStatus = state.level === "healthy"
+    ? "operational"
+    : state.level === "degraded" ? "degraded" : "major_outage";
+  return {
+    id: published?.id ?? state.id,
+    name: published?.name ?? state.id,
+    status,
+    visibility: published ? "public" : "internal",
+    diagnostics: { consecutiveFailures: state.consecutiveFailures, lastFailureMode: state.lastFailureMode }
   };
 }
 

@@ -67,6 +67,7 @@ function isSensitiveKey(key: string): boolean {
 
 function looksLikeSecret(value: string): boolean {
   if (value.length < 10 || value.length > 128) return false;
+  if (/\s|\/|[a-z]/.test(value)) return false;
   return STELLAR_SECRET_PREFIXES.some((prefix) => value.startsWith(prefix));
 }
 

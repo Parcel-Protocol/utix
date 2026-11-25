@@ -442,6 +442,17 @@ export function createLedger(options: LedgerOptions = {}): Ledger {
     }
   }
 
+  /**
+   * Append fast path (#392). Before, every append re-parsed and re-serialized
+   * the whole chain, so n audited writes cost O(n^2). This remembers the exact
+   * blob this instance last wrote plus its tail entry (as JSON, so callers
+   * mutating a returned entry can never alter it). The stored format and the
+   * head-hash check are unchanged.
+   */
+  // `head` is `raw` minus its closing `]}`, kept separately so an append is a
+  // concatenation, never a slice that copies the whole blob.
+  let tail: { raw: string; head: string; lastJson: string | null; anchor: LedgerCheckpoint } | undefined;
+
   function write(state: StoredLedger): void {
     storage.setItem(LEDGER_STORAGE_KEY, JSON.stringify(state));
   }
@@ -482,16 +493,27 @@ export function createLedger(options: LedgerOptions = {}): Ledger {
       if (input.refDigest !== undefined && !HASH_PATTERN.test(input.refDigest)) return err("invalid_ledger_field");
       if (input.at !== undefined && Number.isNaN(Date.parse(input.at))) return err("invalid_ledger_field");
 
-      const current = read();
-      if (!current.ok) return err("ledger_broken");
-      const { state } = current;
+      // Fast path only when storage still holds the exact bytes this instance
+      // last wrote; any other write (prune, reseal, reset, another tab,
+      // tampering) changes the raw string and forces the full read below.
+      const fast = tail !== undefined && storage.getItem(LEDGER_STORAGE_KEY) === tail.raw ? tail : undefined;
+      let state: StoredLedger | undefined;
+      let last: LedgerEntry | undefined;
+      if (fast) {
+        last = fast.lastJson === null ? undefined : (JSON.parse(fast.lastJson) as LedgerEntry);
+      } else {
+        const current = read();
+        if (!current.ok) return err("ledger_broken");
+        state = current.state;
+        last = state.entries[state.entries.length - 1];
+      }
+      const anchor = fast ? fast.anchor : state!.anchor;
 
       // Cheap head check on every append: refuse to extend a chain whose last
       // entry was edited. A full `verify()` is the operator's call.
-      const last = state.entries[state.entries.length - 1];
       if (last && (!isEntryShape(last) || hashLedgerEntry(last) !== last.hash)) return err("ledger_broken");
 
-      const previous = headOf(state);
+      const previous = last ? { seq: last.seq, hash: last.hash, at: last.at } : anchor;
       let at = input.at ?? new Date(now()).toISOString();
       if (previous.at && at < previous.at) {
         // A caller-supplied instant before the head is a misordered write; a
@@ -501,7 +523,23 @@ export function createLedger(options: LedgerOptions = {}): Ledger {
       }
 
       const entry = build(previous, input, at);
-      write({ ...state, entries: [...state.entries, entry] });
+      const entryJson = JSON.stringify(entry);
+      let raw: string;
+      let head: string;
+      if (fast) {
+        // `entries` is the last key, so the blob ends with its closing `]}`.
+        // Splicing yields the same bytes as JSON.stringify of the full state.
+        head = `${fast.head}${last ? "," : ""}${entryJson}`;
+        raw = `${head}]}`;
+      } else {
+        const next: StoredLedger = { ...state!, entries: [...state!.entries, entry] };
+        raw = JSON.stringify(next);
+        head = raw.slice(0, -2);
+      }
+      storage.setItem(LEDGER_STORAGE_KEY, raw);
+      const keys = fast ? null : Object.keys(state!);
+      const spliceable = fast !== undefined || (keys![keys!.length - 1] === "entries" && raw.endsWith("]}"));
+      tail = spliceable ? { raw, head, lastJson: entryJson, anchor } : undefined;
       return ok(entry);
     },
 

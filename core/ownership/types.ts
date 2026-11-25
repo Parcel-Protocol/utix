@@ -15,6 +15,31 @@ export type OwnershipTransferStatus =
   | "rejected"
   | "expired";
 
+export type TransferAuditAction =
+  | "proposed"
+  | "accepted"
+  | "cancelled"
+  | "rejected"
+  | "expired"
+  | "swept";
+
+export interface OwnershipTransferAuditEvent {
+  readonly id: string;
+  readonly transferId: string;
+  readonly resourceType: string;
+  readonly resourceId: string;
+  readonly action: TransferAuditAction;
+  readonly fromOwner: string;
+  readonly toOwner: string;
+  readonly actor: OwnershipActor;
+  readonly timestamp: string;
+  readonly correlationId: string;
+  readonly idempotencyKey?: string;
+  readonly reason?: string;
+  readonly metadata?: Record<string, unknown>;
+  readonly auditDigest: string;
+}
+
 export type OwnershipErrorCode =
   | "unauthorized_not_owner"
   | "unauthorized_not_recipient"

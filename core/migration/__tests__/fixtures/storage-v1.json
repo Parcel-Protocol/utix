@@ -1,0 +1,11 @@
+[
+  {
+    "id": "legacy-op-1",
+    "kind": "operation",
+    "state": "completed",
+    "correlationId": "corr-1",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:01:00.000Z",
+    "payload": { "amount": "1.25" }
+  }
+]

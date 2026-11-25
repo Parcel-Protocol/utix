@@ -67,10 +67,130 @@ export function compareMixedStatusEvents<T extends MixedStatusEvent>(a: T, b: T)
     text(a.id, b.id);
 }
 
-export function sortMixedStatusRecords<T extends MixedStatusRecord>(records: readonly T[]): T[] {
-  return [...records].sort(compareMixedStatusRecords);
+export interface DeterministicSortOptions<T> {
+  readonly isVisible?: (item: T) => boolean;
 }
 
-export function sortMixedStatusEvents<T extends MixedStatusEvent>(events: readonly T[]): T[] {
-  return [...events].sort(compareMixedStatusEvents);
+export interface KeysetPageOptions<T> extends DeterministicSortOptions<T> {
+  readonly cursor?: string;
+  readonly limit?: number;
+}
+
+export interface KeysetPageResult<T> {
+  readonly items: readonly T[];
+  readonly total: number;
+  readonly nextCursor?: string;
+  readonly hasMore: boolean;
+}
+
+export interface DeterministicOrderingVerification {
+  readonly isDeterministic: boolean;
+  readonly inversions: number;
+  readonly violations: readonly string[];
+}
+
+export function sortMixedStatusRecords<T extends MixedStatusRecord>(
+  records: readonly T[],
+  options?: DeterministicSortOptions<T>
+): T[] {
+  const filtered = options?.isVisible ? records.filter(options.isVisible) : records;
+  return [...filtered].sort(compareMixedStatusRecords);
+}
+
+export function sortMixedStatusEvents<T extends MixedStatusEvent>(
+  events: readonly T[],
+  options?: DeterministicSortOptions<T>
+): T[] {
+  const filtered = options?.isVisible ? events.filter(options.isVisible) : events;
+  return [...filtered].sort(compareMixedStatusEvents);
+}
+
+/** Explicit aliases for status feeds and event feeds exposed by callers. */
+export const sortStatusList = sortMixedStatusRecords;
+export const sortEventList = sortMixedStatusEvents;
+
+export function pageMixedStatusRecords<T extends MixedStatusRecord>(
+  records: readonly T[],
+  options?: KeysetPageOptions<T>
+): KeysetPageResult<T> {
+  const sorted = sortMixedStatusRecords(records, options);
+  const limit = Math.max(1, options?.limit ?? 20);
+
+  let startIndex = 0;
+  if (options?.cursor) {
+    const cursorIndex = sorted.findIndex((r) => r.id === options.cursor);
+    if (cursorIndex !== -1) {
+      startIndex = cursorIndex + 1;
+    }
+  }
+
+  const items = sorted.slice(startIndex, startIndex + limit);
+  const nextCursor =
+    items.length > 0 && startIndex + items.length < sorted.length
+      ? items[items.length - 1].id
+      : undefined;
+
+  return {
+    items,
+    total: sorted.length,
+    nextCursor,
+    hasMore: nextCursor !== undefined
+  };
+}
+
+export function pageMixedStatusEvents<T extends MixedStatusEvent>(
+  events: readonly T[],
+  options?: KeysetPageOptions<T>
+): KeysetPageResult<T> {
+  const sorted = sortMixedStatusEvents(events, options);
+  const limit = Math.max(1, options?.limit ?? 20);
+
+  let startIndex = 0;
+  if (options?.cursor) {
+    const cursorIndex = sorted.findIndex((e) => e.id === options.cursor);
+    if (cursorIndex !== -1) {
+      startIndex = cursorIndex + 1;
+    }
+  }
+
+  const items = sorted.slice(startIndex, startIndex + limit);
+  const nextCursor =
+    items.length > 0 && startIndex + items.length < sorted.length
+      ? items[items.length - 1].id
+      : undefined;
+
+  return {
+    items,
+    total: sorted.length,
+    nextCursor,
+    hasMore: nextCursor !== undefined
+  };
+}
+
+export function verifyDeterministicOrdering<T extends MixedStatusRecord | MixedStatusEvent>(
+  items: readonly T[],
+  kind: "record" | "event"
+): DeterministicOrderingVerification {
+  const violations: string[] = [];
+  let inversions = 0;
+  const comparator =
+    kind === "record"
+      ? (a: T, b: T) => compareMixedStatusRecords(a as MixedStatusRecord, b as MixedStatusRecord)
+      : (a: T, b: T) => compareMixedStatusEvents(a as MixedStatusEvent, b as MixedStatusEvent);
+
+  for (let i = 0; i < items.length - 1; i++) {
+    const a = items[i];
+    const b = items[i + 1];
+    const cmp = comparator(a, b);
+    if (cmp > 0) {
+      inversions += 1;
+      violations.push(`Ordering violation between index ${i} ("${a.id}") and index ${i + 1} ("${b.id}")`);
+    }
+  }
+
+  return {
+    isDeterministic: inversions === 0,
+    inversions,
+    violations
+  };
 }

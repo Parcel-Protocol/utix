@@ -37,13 +37,17 @@ export type PolicySimulationErrorCode = "permission_denied" | "invalid_policy" |
 
 export type PolicyOutcome = "no_impact" | "limited_impact" | "broad_impact";
 
-export interface MaintainerSimulationRequest {
-  readonly policy: PolicyDefinition;
-  readonly records: readonly SimulationTargetRecord[];
-  /** Simulate against only these records. Defaults to all of `records`. */
-  readonly recordIds?: readonly string[];
-  readonly maxExamples?: number;
-  readonly now?: Date | number;
+export interface RecordImpactDiff {
+  readonly field: string;
+  readonly before: unknown;
+  readonly expectedImpact: string;
+  readonly severity: PolicyImpactSeverity;
+}
+
+export interface PreviewFilter {
+  readonly entityType?: SimulationTargetRecord["type"];
+  readonly minSeverity?: PolicyImpactSeverity;
+  readonly search?: string;
 }
 
 export interface AffectedRecordExample {
@@ -52,6 +56,27 @@ export interface AffectedRecordExample {
   /** The worst severity among this record's side effects. */
   readonly severity: PolicyImpactSeverity;
   readonly reasons: readonly string[];
+  readonly diffs?: readonly RecordImpactDiff[];
+  readonly riskScore?: number;
+}
+
+export type AffectedRecordPreview = AffectedRecordExample;
+
+export interface PreviewSummary {
+  readonly totalMatchingFilter: number;
+  readonly bySeverity: Record<PolicyImpactSeverity, number>;
+  readonly byEntityType: Record<string, number>;
+}
+
+export interface MaintainerSimulationRequest {
+  readonly policy: PolicyDefinition;
+  readonly records: readonly SimulationTargetRecord[];
+  /** Simulate against only these records. Defaults to all of `records`. */
+  readonly recordIds?: readonly string[];
+  readonly maxExamples?: number;
+  readonly now?: Date | number;
+  readonly filter?: PreviewFilter;
+  readonly includeDiffs?: boolean;
 }
 
 export interface MaintainerSimulationResult {
@@ -61,8 +86,10 @@ export interface MaintainerSimulationResult {
   /** The most severe affected records, at most `maxExamples`. */
   readonly examples: readonly AffectedRecordExample[];
   readonly omittedExamples: number;
+  readonly affectedRecordIds: readonly string[];
   /** Requested `recordIds` that matched no record. */
   readonly unmatchedRecordIds: readonly string[];
+  readonly previewSummary?: PreviewSummary;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -151,28 +178,119 @@ function requestIssues(request: MaintainerSimulationRequest): string[] {
   if (now !== undefined && (!Number.isFinite(now) || !Number.isSafeInteger(now))) {
     issues.push("now must be a valid Date or integer timestamp");
   }
+  if (request.filter !== undefined) {
+    if (!isObject(request.filter)) {
+      issues.push("filter must be an object");
+    } else {
+      if (request.filter.entityType !== undefined && !RECORD_TYPES.includes(request.filter.entityType)) {
+        issues.push(`filter.entityType must be one of ${RECORD_TYPES.join(", ")}`);
+      }
+      if (request.filter.minSeverity !== undefined && !(request.filter.minSeverity in SEVERITY_RANK)) {
+        issues.push("filter.minSeverity must be one of low, medium, high, critical");
+      }
+    }
+  }
   return issues;
 }
 
-function buildExamples(report: PolicySimulationReport): AffectedRecordExample[] {
-  const byRecord = new Map<string, AffectedRecordExample>();
+function buildExamples(
+  report: PolicySimulationReport,
+  recordsMap: Map<string, SimulationTargetRecord>,
+  options?: { filter?: PreviewFilter; includeDiffs?: boolean }
+): { examples: AffectedRecordExample[]; previewSummary: PreviewSummary } {
+  const byRecord = new Map<string, { example: AffectedRecordExample; diffs: RecordImpactDiff[] }>();
+
   for (const effect of report.sideEffects) {
     const existing = byRecord.get(effect.targetId);
-    const reasons = [...(existing?.reasons ?? [])];
+    const reasons = [...(existing?.example.reasons ?? [])];
     if (!reasons.includes(effect.description)) reasons.push(effect.description);
+
+    const record = recordsMap.get(effect.targetId);
+    const diffs = existing ? [...existing.diffs] : [];
+
+    if (options?.includeDiffs) {
+      let beforeValue: unknown = undefined;
+      let fieldName = "attributes";
+      if (record?.attributes) {
+        if ("feeStroops" in record.attributes && effect.description.toLowerCase().includes("fee")) {
+          fieldName = "feeStroops";
+          beforeValue = record.attributes.feeStroops;
+        } else if ("operations" in record.attributes && effect.description.toLowerCase().includes("operation")) {
+          fieldName = "operations";
+          beforeValue = record.attributes.operations;
+        } else {
+          beforeValue = record.attributes;
+        }
+      }
+      diffs.push({
+        field: fieldName,
+        before: beforeValue,
+        expectedImpact: effect.description,
+        severity: effect.severity
+      });
+    }
+
+    const worstSeverity =
+      existing && SEVERITY_RANK[existing.example.severity] >= SEVERITY_RANK[effect.severity]
+        ? existing.example.severity
+        : effect.severity;
+
+    const riskScore = SEVERITY_RANK[worstSeverity] * 10 + reasons.length;
+
     byRecord.set(effect.targetId, {
-      id: effect.targetId,
-      entityType: effect.entityType,
-      severity:
-        existing && SEVERITY_RANK[existing.severity] >= SEVERITY_RANK[effect.severity]
-          ? existing.severity
-          : effect.severity,
-      reasons
+      example: {
+        id: effect.targetId,
+        entityType: effect.entityType,
+        severity: worstSeverity,
+        reasons,
+        diffs: options?.includeDiffs ? diffs : undefined,
+        riskScore
+      },
+      diffs
     });
   }
-  return [...byRecord.values()].sort(
-    (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.id.localeCompare(b.id)
+
+  const allRecords = [...byRecord.values()].map((v) => v.example);
+
+  const bySeverity: Record<PolicyImpactSeverity, number> = { low: 0, medium: 0, high: 0, critical: 0 };
+  const byEntityType: Record<string, number> = {};
+
+  for (const ex of allRecords) {
+    bySeverity[ex.severity] = (bySeverity[ex.severity] ?? 0) + 1;
+    byEntityType[ex.entityType] = (byEntityType[ex.entityType] ?? 0) + 1;
+  }
+
+  let filtered = allRecords;
+  if (options?.filter) {
+    const { entityType, minSeverity, search } = options.filter;
+    filtered = filtered.filter((ex) => {
+      if (entityType && ex.entityType !== entityType) return false;
+      if (minSeverity && SEVERITY_RANK[ex.severity] < SEVERITY_RANK[minSeverity]) return false;
+      if (search) {
+        const needle = search.toLowerCase();
+        const matchesId = ex.id.toLowerCase().includes(needle);
+        const matchesReason = ex.reasons.some((r) => r.toLowerCase().includes(needle));
+        if (!matchesId && !matchesReason) return false;
+      }
+      return true;
+    });
+  }
+
+  filtered.sort(
+    (a, b) =>
+      SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
+      (b.riskScore ?? 0) - (a.riskScore ?? 0) ||
+      a.id.localeCompare(b.id)
   );
+
+  return {
+    examples: filtered,
+    previewSummary: {
+      totalMatchingFilter: filtered.length,
+      bySeverity,
+      byEntityType
+    }
+  };
 }
 
 export function runPolicySimulation(
@@ -199,7 +317,13 @@ export function runPolicySimulation(
   const outcome: PolicyOutcome =
     report.totalAffected === 0 ? "no_impact" : ratio > BROAD_IMPACT_RATIO ? "broad_impact" : "limited_impact";
 
-  const all = buildExamples(report);
+  const recordsMap = new Map<string, SimulationTargetRecord>();
+  for (const record of selected) recordsMap.set(record.id, record);
+
+  const { examples: all, previewSummary } = buildExamples(report, recordsMap, {
+    filter: request.filter,
+    includeDiffs: request.includeDiffs ?? true
+  });
   const maxExamples = Math.max(0, request.maxExamples ?? DEFAULT_MAX_EXAMPLES);
   const examples = all.slice(0, maxExamples);
 
@@ -212,6 +336,15 @@ export function runPolicySimulation(
       `risk ${report.overallRiskLevel}, recommended action: ${report.executionPlan.recommendedAction}.`,
     examples,
     omittedExamples: all.length - examples.length,
-    unmatchedRecordIds
+    affectedRecordIds: all.map((example) => example.id),
+    unmatchedRecordIds,
+    previewSummary
   });
+}
+
+export function previewPolicyWithRecordDiffs(
+  auth: AuthContext,
+  request: MaintainerSimulationRequest
+): Result<MaintainerSimulationResult, PolicySimulationErrorCode, readonly string[]> {
+  return runPolicySimulation(auth, { ...request, includeDiffs: true });
 }

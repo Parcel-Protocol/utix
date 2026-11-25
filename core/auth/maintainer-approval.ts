@@ -16,6 +16,14 @@
 import { Keypair, StrKey } from "@stellar/stellar-sdk";
 import { sha256Hex } from "@/core/ledger/sha256";
 import { recordAudit, type AuditEvent } from "@/core/audit/audit";
+import type { AuthContext } from "@/core/auth/middleware";
+import {
+  DestructiveActionPreviewEngine,
+  defaultPreviewEngine,
+  type DestructiveActionPreview,
+  type PreviewParams,
+  type PreviewErrorCode
+} from "./destructive-preview";
 
 export type HighImpactAction =
   | "emergency_killswitch"
@@ -183,8 +191,13 @@ export class MaintainerApprovalManager {
   private intents: Map<string, IntentRequest> = new Map();
   private receipts: Map<string, ApprovalReceipt> = new Map();
   private receiptsByIntent: Map<string, string> = new Map();
+  public readonly previewEngine: DestructiveActionPreviewEngine;
 
-  constructor(private readonly options: ApprovalFlowOptions = {}) {}
+  constructor(private readonly options: ApprovalFlowOptions = {}) {
+    this.previewEngine = new DestructiveActionPreviewEngine({
+      now: () => this.now()
+    });
+  }
 
   private now(): number {
     return this.options.now ? this.options.now().getTime() : Date.now();
@@ -582,16 +595,55 @@ export class MaintainerApprovalManager {
   }
 
   /**
+   * Generates a dry-run preview for a high-impact maintainer action.
+   */
+  previewDryRun(
+    params: PreviewParams,
+    auth?: AuthContext
+  ) {
+    return this.previewEngine.generatePreview(params, auth);
+  }
+
+  /**
+   * Executes a protected action ensuring it matches a previously verified dry-run preview.
+   */
+  async executeWithPreviewVerification<T>(
+    request: ProtectedActionRequest,
+    previewId: string,
+    currentLiveState: Record<string, unknown>,
+    actionHandler: (intent: IntentRequest) => Promise<T> | T,
+    options?: ProtectedActionExecutionOptions,
+    expectedPreviewDigest?: string
+  ): Promise<{ result: T; receipt: ApprovalReceipt; preview: DestructiveActionPreview }> {
+    const previewVerification = this.previewEngine.verifyPreviewForExecution(
+      previewId,
+      currentLiveState,
+      expectedPreviewDigest
+    );
+    if (!previewVerification.ok) {
+      throw new Error(`Preview verification failed [${previewVerification.code}]: cannot execute destructive action`);
+    }
+
+    const { result, receipt } = await this.executeProtectedAction(request, actionHandler, options);
+    this.previewEngine.consumePreview(previewId, request.executorPublicKey);
+
+    return { result, receipt, preview: previewVerification.value };
+  }
+
+  /**
    * Clears in-memory data (useful for test isolation).
    */
   reset(): void {
     this.intents.clear();
     this.receipts.clear();
     this.receiptsByIntent.clear();
+    this.previewEngine.clear();
   }
 }
 
 export const maintainerApprovalManager = new MaintainerApprovalManager();
+
+export * from "./destructive-preview";
 
 /**
  * Top-level convenience wrapper for verifying protected action approvals against the default or provided manager.

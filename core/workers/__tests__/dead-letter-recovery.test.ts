@@ -174,12 +174,16 @@ describe("Resumable Background Jobs with Dead-Letter Recovery", () => {
       expect(worker.getById(job.id)?.status).toBe("dead_lettered");
 
       successAttempt = true;
-      const retried = worker.retryJob(job.id);
-      expect(retried.ok).toBe(true);
+      // `dead_lettered` is terminal, so `retryJob` refuses it; recovery creates
+      // a replacement job instead (#334).
+      expect(worker.retryJob(job.id).ok).toBe(false);
+      const recovered = worker.recoverDeadLetter(job.id, { role: "maintainer" });
+      expect(recovered.ok).toBe(true);
+      if (!recovered.ok) return;
 
       worker.drainDueJobs();
-      const recovered = worker.getById(job.id);
-      expect(recovered?.status).toBe("succeeded");
+      expect(worker.getById(recovered.value.id)?.status).toBe("succeeded");
+      expect(worker.getById(job.id)?.status).toBe("dead_lettered");
     });
   });
 

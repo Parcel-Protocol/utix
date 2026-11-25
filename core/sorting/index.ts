@@ -4,6 +4,15 @@ export {
   compareMixedStatusRecords,
   sortMixedStatusEvents,
   sortMixedStatusRecords,
+  sortStatusList,
+  sortEventList,
+  pageMixedStatusEvents,
+  pageMixedStatusRecords,
+  verifyDeterministicOrdering,
+  type DeterministicOrderingVerification,
+  type DeterministicSortOptions,
+  type KeysetPageOptions,
+  type KeysetPageResult,
   type MixedStatusEvent,
   type MixedStatusRecord
-} from "./mixedStatus";
+} from "./mixedStatus.ts";

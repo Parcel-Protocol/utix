@@ -259,6 +259,46 @@ export function applyFieldLevelAuthorization(
   return { record: sanitized, filteredCount };
 }
 
+/**
+ * Sanitizes an export record by scrubbing embedded secret seeds / tokens from string values
+ * while preserving explicitly authorized fields.
+ */
+export function sanitizeExportRecord(
+  record: ExportRecord,
+  actor: ExportActor,
+  rules: readonly FieldAuthorizationRule[]
+): ExportRecord {
+  const isMaintainer = actor.kind === "maintainer";
+  const userPerms = actor.permissions ?? [];
+  const out: ExportRecord = {};
+
+  for (const [key, val] of Object.entries(record)) {
+    const rule = rules.find((r) => r.field === key);
+    const isExplicitlyAuthorized =
+      isMaintainer ||
+      (rule !== undefined &&
+        (rule.minScope === undefined || rule.minScope === "own") &&
+        (!rule.requiredPermissions || rule.requiredPermissions.every((p) => userPerms.includes(p))));
+
+    if (isExplicitlyAuthorized) {
+      if (typeof val === "string") {
+        out[key] = val
+          .replace(/[SM][A-Z2-7]{55}/g, "[REDACTED]")
+          .replace(/Bearer\s+[A-Za-z0-9._~+/-]+/gi, "[REDACTED]");
+      } else {
+        out[key] = val;
+      }
+    } else {
+      out[key] =
+        typeof val === "string" && /secret|seed|password|token|bearer|key/i.test(key) && !/public/i.test(key)
+          ? "[REDACTED]"
+          : redact(val);
+    }
+  }
+
+  return out;
+}
+
 interface CollectedExportRecord {
   key: string;
   record: ExportRecord;
@@ -484,14 +524,15 @@ export function exportRecords(
           rules: combinedRules
         });
         totalFieldsFiltered += result.filteredCount;
-        return redact(result.record) as ExportRecord;
+        return sanitizeExportRecord(result.record, request.actor, combinedRules);
       });
 
+      const nowMs = Date.now();
       const envelope: ExportEnvelope = {
         schemaVersion: request.schemaVersion,
         scope: request.scope,
-        generatedAt: nowIso(),
-        expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+        generatedAt: new Date(nowMs).toISOString(),
+        expiresAt: new Date(nowMs + ttlMs).toISOString(),
         generator: EXPORT_GENERATOR,
         correlationId: request.correlationId ?? newCorrelationId(),
         recordCount: sanitizedPaged.length,
@@ -634,7 +675,7 @@ export function streamExportRecords(
             { requestedFields: request.fields, rules: combinedRules }
           );
           fieldsFiltered += result.filteredCount;
-          buffer.push(redact(result.record) as ExportRecord);
+          buffer.push(sanitizeExportRecord(result.record, request.actor, combinedRules));
           if (buffer.length >= chunkSize) {
             const records = buffer;
             buffer = [];

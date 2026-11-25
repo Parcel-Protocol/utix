@@ -87,6 +87,10 @@ export interface StepCheckpoint {
   /** Result persisted by the step, replayed on resume instead of re-running. */
   readonly output?: unknown;
   readonly errorCode?: string;
+  /** Rollback status when compensating actions are executed. */
+  readonly rollbackStatus?: "pending" | "rolled_back" | "rollback_failed" | "rollback_interrupted";
+  readonly rollbackErrorCode?: string;
+  readonly rollbackOutput?: unknown;
 }
 
 export interface OperationRecord {
@@ -99,6 +103,7 @@ export interface OperationRecord {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly lastErrorCode?: string;
+  readonly rolledBackAt?: string;
 }
 
 export interface OperationStorage {
@@ -155,11 +160,28 @@ export interface StepRunInput<TContext> {
   readonly context: TContext;
 }
 
+export interface StepRollbackInput<TContext> {
+  readonly operationId: string;
+  readonly stepId: string;
+  readonly attempt: number;
+  readonly idempotencyKey: string;
+  readonly output?: unknown;
+  readonly context: TContext;
+  readonly error?: string;
+}
+
+export type StepRollbackOutcome =
+  | { readonly status: "rolled_back"; readonly output?: unknown }
+  | { readonly status: "failed"; readonly errorCode: string }
+  | { readonly status: "interrupted"; readonly errorCode: string };
+
 export interface StepDefinition<TContext> {
   readonly id: string;
   /** Override the derived key. Defaults to `operation:<id>:step:<id>`. */
   readonly idempotencyKey?: (operationId: string) => string;
   run(input: StepRunInput<TContext>): StepOutcome | Promise<StepOutcome>;
+  /** Optional compensating action executed in reverse order if subsequent steps fail. */
+  readonly rollback?: (input: StepRollbackInput<TContext>) => StepRollbackOutcome | Promise<StepRollbackOutcome>;
 }
 
 export interface OperationDefinition<TContext> {
@@ -199,4 +221,6 @@ export type OperationErrorCode =
   | "unknown_step"
   | "terminal_operation"
   | "permission_denied"
-  | "storage_error";
+  | "storage_error"
+  | "rollback_failed"
+  | "nothing_to_rollback";

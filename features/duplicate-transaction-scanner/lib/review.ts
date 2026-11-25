@@ -26,12 +26,16 @@
  */
 
 import { recordAudit } from "@/core/audit";
+import type { AuthContext } from "@/core/auth/middleware";
+import { hasPermission } from "@/core/auth/types";
 import { err, ok, type Result } from "@/core/result/result";
-import { measure } from "@/core/telemetry/telemetry";
+import { measureSync } from "@/core/telemetry/telemetry";
 import type {
   CandidateGroup,
   CandidateGroupState,
   DuplicateScanErrorCode,
+  FetchedTransaction,
+  MergePlan,
   ReviewAction,
   ReviewInput,
 } from "@/features/duplicate-transaction-scanner/types";
@@ -166,7 +170,7 @@ export function applyReview(
   group: CandidateGroup,
   input: ReviewInput,
 ): Result<CandidateGroup, DuplicateScanErrorCode> {
-  return measure(
+  return measureSync(
     "duplicate_scanner.review",
     { actorType: "user", correlationId: crypto.randomUUID() },
     () => {
@@ -211,4 +215,151 @@ export function applyReview(
       return ok(updatedGroup);
     },
   );
+}
+
+/**
+ * Deterministically constructs a MergePlan for a candidate duplicate group.
+ * Selects the canonical primary transaction (earliest ledger sequence, lowest timestamp,
+ * or lexicographical hash tie-breaker) and identifies matching vs differing fields.
+ */
+export function createMergePlan(group: CandidateGroup): MergePlan {
+  if (group.transactions.length === 0) {
+    throw new Error("Cannot create a merge plan for an empty group");
+  }
+
+  // Deterministic primary transaction selection
+  const sorted = [...group.transactions].sort((a, b) => {
+    if (a.ledger !== b.ledger) return a.ledger - b.ledger;
+    const timeA = new Date(a.createdAt).getTime();
+    const timeB = new Date(b.createdAt).getTime();
+    if (timeA !== timeB) return timeA - timeB;
+    return a.hash.localeCompare(b.hash);
+  });
+
+  const primary = sorted[0];
+  const duplicates = sorted.slice(1);
+
+  const matchingFields: string[] = ["sourceAccount", "feeCharged", "memoType", "memo", "operationTypes"];
+  const differingFields: string[] = [];
+
+  for (const dup of duplicates) {
+    if (dup.ledger !== primary.ledger && !differingFields.includes("ledger")) differingFields.push("ledger");
+    if (dup.createdAt !== primary.createdAt && !differingFields.includes("createdAt")) differingFields.push("createdAt");
+    if (dup.hash !== primary.hash && !differingFields.includes("hash")) differingFields.push("hash");
+  }
+
+  const recommendation: MergePlan["recommendation"] =
+    group.state === "confirmed"
+      ? "merge_confirmed"
+      : differingFields.length > 0
+        ? "review_differing_fields"
+        : "distinct_transactions";
+
+  const confidenceScore = differingFields.length === 0 ? 1.0 : differingFields.includes("ledger") ? 0.95 : 0.85;
+
+  return {
+    groupId: group.id,
+    primaryTransaction: primary,
+    duplicateTransactions: duplicates,
+    matchingFields,
+    differingFields,
+    recommendation,
+    confidenceScore
+  };
+}
+
+/**
+ * Server-side authorization boundary for applying a review action.
+ * Requires `admin:recovery` or maintainer role.
+ */
+export function applyReviewAuthorized(
+  auth: AuthContext,
+  group: CandidateGroup,
+  input: ReviewInput,
+): Result<CandidateGroup, DuplicateScanErrorCode> {
+  if (!hasPermission(auth.role, "admin:recovery") && !hasPermission(auth.role, "admin:config")) {
+    recordAudit({
+      action: "record.transition_denied",
+      actor: { kind: "user", id: input.actorId },
+      scope: "own",
+      target: { kind: "duplicate_candidate_group", id: group.id },
+      reason: "permission_denied",
+      outcome: "denied",
+      errorCode: "permission_denied",
+      before: { state: group.state },
+      after: { requestedAction: input.action },
+    });
+    return err("permission_denied" as DuplicateScanErrorCode);
+  }
+
+  return applyReview(group, input);
+}
+
+/**
+ * Rolls back an accidental or disputed review decision.
+ * Reverts a confirmed or dismissed candidate group back to `deferred` state.
+ */
+export function rollbackReview(
+  group: CandidateGroup,
+  input: { actorId: string; reason?: string },
+): Result<CandidateGroup, DuplicateScanErrorCode> {
+  return measureSync(
+    "duplicate_scanner.rollback_review",
+    { actorType: "user", correlationId: crypto.randomUUID() },
+    () => {
+      if (group.state !== "confirmed" && group.state !== "dismissed") {
+        // Idempotent: not in a terminal state
+        return ok(group);
+      }
+
+      const previousState = group.state;
+      const updatedGroup: CandidateGroup = {
+        ...group,
+        state: "deferred",
+        reviewedAt: new Date().toISOString(),
+        reviewedBy: input.actorId,
+        reviewReason: input.reason ?? "review.rollback",
+      };
+
+      recordAudit({
+        action: "record.state_changed",
+        actor: { kind: "user", id: input.actorId },
+        scope: "own",
+        target: { kind: "duplicate_candidate_group", id: group.id },
+        reason: input.reason ?? "review.rollback",
+        outcome: "allowed",
+        before: { state: previousState },
+        after: { state: "deferred" },
+      });
+
+      return ok(updatedGroup);
+    },
+  );
+}
+
+/**
+ * Server-side authorization boundary for rolling back a review decision.
+ * Requires `admin:recovery` or maintainer role.
+ */
+export function rollbackReviewAuthorized(
+  auth: AuthContext,
+  group: CandidateGroup,
+  input: { actorId: string; reason?: string },
+): Result<CandidateGroup, DuplicateScanErrorCode> {
+  if (!hasPermission(auth.role, "admin:recovery") && !hasPermission(auth.role, "admin:config")) {
+    recordAudit({
+      action: "record.transition_denied",
+      actor: { kind: "user", id: input.actorId },
+      scope: "own",
+      target: { kind: "duplicate_candidate_group", id: group.id },
+      reason: "permission_denied",
+      outcome: "denied",
+      errorCode: "permission_denied",
+      before: { state: group.state },
+      after: { requestedAction: "rollback" },
+    });
+    return err("permission_denied" as DuplicateScanErrorCode);
+  }
+
+  return rollbackReview(group, input);
 }

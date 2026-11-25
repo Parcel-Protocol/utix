@@ -13,14 +13,23 @@
  */
 
 import { err, ok, type Result } from "@/core/result/result";
-import { recordAudit, type AuditActor, type AuditInput } from "@/core/audit/audit";
+import type { Role } from "@/core/auth/types";
+import {
+  auditContext,
+  recordAudit,
+  type AuditActor,
+  type AuditEvent,
+  type AuditInput,
+  type AuditReceiptSigner
+} from "@/core/audit/audit";
+import { createSignedAuditReceipt } from "@/core/audit/signed-receipt";
+import { newCorrelationId } from "@/core/telemetry/telemetry";
 import { VALID_ROLES } from "@/core/admin-config/types";
 import type {
   AdminConfig,
   AdminConfigErrorCode,
   AdminConfigInput,
-  AdminConfigKey,
-  Role
+  AdminConfigKey
 } from "@/core/admin-config/types";
 
 export const ADMIN_CONFIG_KEYS: readonly AdminConfigKey[] = [
@@ -83,10 +92,26 @@ export interface AdminConfigStoreOptions {
    * the change.
    */
   readonly record?: (input: AuditInput) => AuditEvent | undefined;
+  /** Private signing capability; key material stays with the trusted host. */
+  readonly receiptSigner?: AuditReceiptSigner;
+  readonly newId?: () => string;
+  readonly now?: () => number;
 }
+
+type AuditResult =
+  | { readonly ok: true; readonly event: AuditEvent }
+  | {
+      readonly ok: false;
+      readonly code:
+        | "admin_config_receipt_unavailable"
+        | "admin_config_receipt_failed"
+        | "admin_config_audit_rejected";
+    };
 
 export function createAdminConfigStore(options: AdminConfigStoreOptions = {}): AdminConfigStore {
   const record = options.record ?? recordAudit;
+  const newId = options.newId ?? newCorrelationId;
+  const now = options.now ?? (() => Date.now());
   const config: MutableAdminConfig = { ...DEFAULT_CONFIG };
 
   function audit(
@@ -96,8 +121,12 @@ export function createAdminConfigStore(options: AdminConfigStoreOptions = {}): A
     outcome: "allowed" | "denied",
     errorCode?: AdminConfigErrorCode,
     reason?: string
-  ): AuditEvent | undefined {
-    return record({
+  ): AuditResult {
+    const at = new Date(now()).toISOString();
+    const id = newId();
+    const correlationId = newId();
+    const input: AuditInput = {
+      id,
       action: "admin.config_changed",
       actor,
       scope: "maintainer",
@@ -106,8 +135,50 @@ export function createAdminConfigStore(options: AdminConfigStoreOptions = {}): A
       outcome,
       before: { [key]: config[key] },
       after: { [key]: value },
-      errorCode
+      errorCode,
+      at,
+      correlationId
+    };
+    const event: Omit<AuditEvent, "receipt"> = {
+      ...input,
+      id,
+      actorId: actor.id ?? actor.kind,
+      before: auditContext(input.before),
+      after: auditContext(input.after),
+      scope: "maintainer",
+      target: input.target,
+      outcome,
+      at,
+      correlationId
+    };
+    if (!options.receiptSigner) {
+      if (outcome === "denied") {
+        const recorded = record(input);
+        return recorded
+          ? { ok: true, event: recorded }
+          : { ok: false, code: "admin_config_audit_rejected" };
+      }
+      return { ok: false, code: "admin_config_receipt_unavailable" };
+    }
+    let receipt;
+    try {
+      receipt = createSignedAuditReceipt(event, options.receiptSigner);
+    } catch {
+      if (outcome === "denied") {
+        const recorded = record(input);
+        return recorded
+          ? { ok: true, event: recorded }
+          : { ok: false, code: "admin_config_audit_rejected" };
+      }
+      return { ok: false, code: "admin_config_receipt_failed" };
+    }
+    const recorded = record({
+      ...input,
+      receipt
     });
+    return recorded
+      ? { ok: true, event: recorded }
+      : { ok: false, code: "admin_config_audit_rejected" };
   }
 
   return {
@@ -143,9 +214,8 @@ export function createAdminConfigStore(options: AdminConfigStoreOptions = {}): A
 
       // Audit-first: the change is only applied once the audit event is on the
       // trail. If the trail rejects it, nothing is applied.
-      if (!audit(actor, key, value, "allowed", undefined, reason)) {
-        return err("admin_config_audit_rejected");
-      }
+      const evidence = audit(actor, key, value, "allowed", undefined, reason);
+      if (!evidence.ok) return err(evidence.code);
 
       config[key] = value;
       return ok({ ...config });

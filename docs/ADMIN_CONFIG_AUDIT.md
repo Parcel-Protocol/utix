@@ -23,6 +23,11 @@ same rules as the rest of the audit trail (see [AUDIT.md](./AUDIT.md)):
 - **Audit-first.** The change is applied only after the audit event is on the
   trail. If the trail rejects the event, the change is not applied — so there is
   never a configuration change without audit evidence.
+- **Signed receipt.** With an injected signer, every accepted or denied config
+  attempt includes an Ed25519 signature over the normalized audit event. The
+  private key is injected by the trusted host and is never persisted by this
+  store. If no signer is available, denied attempts remain auditable but
+  unsigned; an accepted config write fails closed.
 
 ## Sensitive action
 
@@ -43,7 +48,7 @@ calling the store:
 import { getAuthContext, requirePermission } from "@/core/auth/middleware";
 import { createAdminConfigStore } from "@/core/admin-config/store";
 
-const store = createAdminConfigStore();
+const store = createAdminConfigStore({ receiptSigner });
 
 export async function updateConfig(key, value) {
   const context = getAuthContext();
@@ -84,6 +89,7 @@ stays a single, testable point.
 | **Failure — unknown key** | `err("admin_config_unknown_key")`, config unchanged, `denied` event. |
 | **Failure — invalid value** | `err("admin_config_invalid_value")`, config unchanged, `denied` event. |
 | **Failure — audit rejected** | `err("admin_config_audit_rejected")`, config **not applied**.      |
+| **Failure — signer unavailable** | `admin_config_receipt_unavailable` or `admin_config_receipt_failed`, config unchanged. |
 | **Retry**             | Re-applying after a failure with a valid value succeeds.                  |
 | **Idempotent retry**  | Re-applying the current value is a no-op `ok` and is not re-audited.      |
 
@@ -103,7 +109,15 @@ stays a single, testable point.
 - **Client-side storage.** The default trail is backed by `localStorage` when
   available, otherwise in-memory. It is a review aid, not a server of record; a
   real deployment should export the trail server-side rather than trust the
-  browser copy.
+  browser copy. An Ed25519 signature proves integrity only when the verifier
+  trusts the public key for the receipt's `signerId`; it does not make browser
+  storage authoritative.
+- **Key rotation.** Keep retired public keys available for verification of
+  older events. Deploy a new signer with a new `signerId`; do not overwrite a key
+  identifier. If the signer is unavailable, config writes fail closed.
+- **Receipt tampering.** `verifySignedAuditReceipt(event, trustedPublicKeys)`
+  returns false for missing/untrusted keys, altered event fields, invalid
+  signatures, and malformed receipt data.
 - **No secret leakage.** Endpoint credentials (`user:pass@`) are rejected at
   validation, and embedded Stellar secrets / bearer tokens are scrubbed before
   persistence.
@@ -112,7 +126,7 @@ stays a single, testable point.
 
 - Unit tests: `core/admin-config/__tests__/store.test.ts` and
   `core/admin-config/__tests__/audit.test.ts` cover normal, failure, retry,
-  authorization, and audit-evidence paths.
+  authorization, signed receipt verification, tampering, and audit-evidence paths.
 - `npm run verify:audit` asserts `admin.config_changed` is declared and emitted
   at the domain boundary.
 - `npm run verify:features` and `npm run verify:boundaries` are unaffected
@@ -129,5 +143,9 @@ This is an additive change:
   is removed or renamed.
 - `scripts/verify-audit.mjs` gains one boundary entry.
 
-No data migration is required: the store starts from defaults and the audit
-trail begins empty.
+Existing `AuditEvent` records remain valid and readable; their `receipt` field
+is optional. Before enabling admin writes, inject an Ed25519 signer using
+`createEd25519AuditSigner` and retain its public key in the verifier's trusted
+key set. New admin config writes without a signer are refused. No stored-event
+migration is required; legacy events remain unsigned and must not be presented
+as signed evidence.

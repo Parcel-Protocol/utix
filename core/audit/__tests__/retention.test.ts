@@ -35,6 +35,18 @@ describe("Operational Data Retention and Deletion (#259)", () => {
   ];
 
   describe("normal path", () => {
+    it("does not report scrubbed retained records as deleted", async () => {
+      const result = await OperationalDataRetentionManager.enforceRetentionWithVerification(
+        [{ id: "keep", at: "2026-10-16T00:00:00.000Z", token: "secret" }],
+        { recordKind: "operational_log", ttlMs: 30 * 24 * 60 * 60 * 1000 },
+        { actor: maintainerActor, reason: "verify_scrub", now: () => Date.parse("2026-10-17T00:00:00.000Z") }
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.verification.deletedIdsCount).toBe(0);
+        expect(result.value.verification.valid).toBe(true);
+      }
+    });
     it("enforces retention policy by removing records exceeding TTL", async () => {
       const fixedNow = Date.parse("2026-10-17T00:00:00.000Z");
       const policy: RetentionPolicy = {
@@ -326,6 +338,224 @@ describe("Operational Data Retention and Deletion (#259)", () => {
       expect(res.auth).toBe("[REDACTED]");
       expect(res.credentials).toBe("[REDACTED]");
       expect(res.meta.privateKey).toBe("[REDACTED]");
+    });
+  });
+
+  describe("deletion verification (#400)", () => {
+    it("cryptographically verifies deletion and retention bounds", () => {
+      const policy: RetentionPolicy = {
+        recordKind: "operational_log",
+        ttlMs: 30 * 24 * 60 * 60 * 1000,
+        maxRecords: 10,
+        scrubSensitiveFields: true
+      };
+      const options: DeletionOptions = {
+        actor: maintainerActor,
+        reason: "verify_scheduled_purge",
+        now: () => Date.parse("2026-10-17T00:00:00.000Z")
+      };
+
+      const activeRecords = [sampleOperationalRecords[2]]; // op-3 (recent)
+      const deletedIds = ["op-1", "op-2"];
+
+      const result = OperationalDataRetentionManager.verifyDeletion(
+        activeRecords,
+        deletedIds,
+        policy,
+        options
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.valid).toBe(true);
+      expect(result.value.verifiedNonExistence).toBe(true);
+      expect(result.value.ttlCompliant).toBe(true);
+      expect(result.value.capacityCompliant).toBe(true);
+      expect(result.value.scrubCompliant).toBe(true);
+      expect(result.value.deletedIdsCount).toBe(2);
+      expect(result.value.activeRecordsCount).toBe(1);
+      expect(result.value.stateDigest).toBeDefined();
+      expect(result.value.stateDigest.length).toBe(64); // SHA-256
+      expect(result.value.violations).toEqual([]);
+    });
+
+    it("enforces retention with verification in a single automated workflow", async () => {
+      const fixedNow = Date.parse("2026-10-17T00:00:00.000Z");
+      const policy: RetentionPolicy = {
+        recordKind: "operational_log",
+        ttlMs: 30 * 24 * 60 * 60 * 1000,
+        maxRecords: 5,
+        scrubSensitiveFields: true
+      };
+      const options: DeletionOptions = {
+        actor: maintainerActor,
+        reason: "enforce_and_verify_compliance",
+        now: () => fixedNow
+      };
+
+      const result = await OperationalDataRetentionManager.enforceRetentionWithVerification(
+        sampleOperationalRecords,
+        policy,
+        options
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.sweep.deletedCount).toBe(2);
+      expect(result.value.sweep.retainedCount).toBe(1);
+      expect(result.value.verification.valid).toBe(true);
+      expect(result.value.verification.verifiedNonExistence).toBe(true);
+      expect(result.value.verification.deletedIdsCount).toBe(2);
+    });
+
+    it("detects non-existence violation when deleted record remains active", () => {
+      const policy: RetentionPolicy = {
+        recordKind: "operational_log",
+        maxRecords: 10
+      };
+      const options: DeletionOptions = {
+        actor: maintainerActor,
+        reason: "integrity_check"
+      };
+
+      // Incomplete purge simulation: op-1 was marked as deleted but still present
+      const activeRecords = [sampleOperationalRecords[0], sampleOperationalRecords[2]];
+      const deletedIds = ["op-1"];
+
+      const result = OperationalDataRetentionManager.verifyDeletion(
+        activeRecords,
+        deletedIds,
+        policy,
+        options
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.valid).toBe(false);
+      expect(result.value.verifiedNonExistence).toBe(false);
+      expect(result.value.violations.some((v) => v.includes("op-1"))).toBe(true);
+    });
+
+    it("detects TTL violation when active record exceeds policy threshold", () => {
+      const fixedNow = Date.parse("2026-10-17T00:00:00.000Z");
+      const policy: RetentionPolicy = {
+        recordKind: "operational_log",
+        ttlMs: 24 * 60 * 60 * 1000 // 1 day TTL
+      };
+      const options: DeletionOptions = {
+        actor: maintainerActor,
+        reason: "ttl_compliance_verification",
+        now: () => fixedNow
+      };
+
+      // op-2 is months old, violating 1-day TTL
+      const activeRecords = [sampleOperationalRecords[1]];
+      const result = OperationalDataRetentionManager.verifyDeletion(activeRecords, [], policy, options);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.valid).toBe(false);
+      expect(result.value.ttlCompliant).toBe(false);
+      expect(result.value.violations.some((v) => v.includes("exceeds TTL"))).toBe(true);
+    });
+
+    it("detects capacity violation when active count exceeds maxRecords", () => {
+      const policy: RetentionPolicy = {
+        recordKind: "operational_log",
+        maxRecords: 1
+      };
+      const options: DeletionOptions = {
+        actor: maintainerActor,
+        reason: "capacity_verification"
+      };
+
+      const result = OperationalDataRetentionManager.verifyDeletion(
+        sampleOperationalRecords,
+        [],
+        policy,
+        options
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.valid).toBe(false);
+      expect(result.value.capacityCompliant).toBe(false);
+      expect(result.value.violations.some((v) => v.includes("exceeds maximum limit"))).toBe(true);
+    });
+
+    it("detects scrubbing violation when sensitive fields remain unredacted", () => {
+      const policy: RetentionPolicy = {
+        recordKind: "operational_log",
+        scrubSensitiveFields: true
+      };
+      const options: DeletionOptions = {
+        actor: maintainerActor,
+        reason: "scrub_verification"
+      };
+
+      // Unscrubbed record with raw apiKey
+      const unscrubbedRecord = {
+        id: "unscrubbed-1",
+        at: "2026-10-16T00:00:00.000Z",
+        apiKey: "raw-unscrubbed-key"
+      };
+
+      const result = OperationalDataRetentionManager.verifyDeletion(
+        [unscrubbedRecord],
+        [],
+        policy,
+        options
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.valid).toBe(false);
+      expect(result.value.scrubCompliant).toBe(false);
+      expect(result.value.violations.some((v) => v.includes("unredacted sensitive operational fields"))).toBe(true);
+    });
+
+    it("denies deletion verification to standard user actors", () => {
+      const result = OperationalDataRetentionManager.verifyDeletion(
+        sampleOperationalRecords,
+        [],
+        { recordKind: "audit" },
+        { actor: userActor, reason: "unauthorized" }
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe("retention_denied");
+      }
+    });
+
+    it("rejects invalid policy or deletion request in verification", () => {
+      const invalidPolicy = OperationalDataRetentionManager.verifyDeletion(
+        sampleOperationalRecords,
+        [],
+        { recordKind: "" },
+        { actor: maintainerActor, reason: "check" }
+      );
+      expect(invalidPolicy.ok).toBe(false);
+      if (!invalidPolicy.ok) {
+        expect(invalidPolicy.code).toBe("invalid_policy");
+      }
+
+      const invalidReq = OperationalDataRetentionManager.verifyDeletion(
+        sampleOperationalRecords,
+        [],
+        { recordKind: "audit" },
+        { actor: maintainerActor, reason: "  " }
+      );
+      expect(invalidReq.ok).toBe(false);
+      if (!invalidReq.ok) {
+        expect(invalidReq.code).toBe("invalid_deletion_request");
+      }
     });
   });
 });

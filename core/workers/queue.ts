@@ -22,6 +22,9 @@ import {
   type IdempotencyRecord,
   type IdempotencyStore
 } from "@/core/idempotency/idempotency";
+import type { AuthContext } from "@/core/auth/middleware";
+import { hasPermission, type Permission } from "@/core/auth/types";
+import { validateJobInput } from "@/core/workers/job-input";
 import { applyTransition, type LifecycleErrorCode } from "@/core/lifecycle/lifecycle";
 import { workerJobMachine } from "@/core/lifecycle/records";
 import {
@@ -60,6 +63,34 @@ export interface JobPayload {
   /** Serializable failure context — code plus message, never secrets. */
   lastError?: { code: string; message: string };
   readonly correlationId: string;
+  /**
+   * Last progress marker the handler saved with `context.saveCheckpoint()`
+   * (#334). Kept across failed attempts and manual retries so the next attempt
+   * resumes instead of starting over.
+   */
+  checkpoint?: unknown;
+  /** Set on a job created by `recoverDeadLetter`: the dead letter it replaces. */
+  readonly recoveredFrom?: string;
+  /** Set on a dead letter once it has been recovered: the replacement job id. */
+  recoveredBy?: string;
+}
+
+/** Why `recoverDeadLetter` refused (#334). */
+export type DeadLetterRecoveryCode =
+  | "unauthorized"
+  | "unknown_job"
+  | "not_dead_lettered"
+  | "unregistered";
+
+/** The permission `recoverDeadLetter` requires. */
+export const DEAD_LETTER_RECOVERY_PERMISSION: Permission = "admin:recovery";
+
+export interface RecoverDeadLetterOptions {
+  /**
+   * Start the replacement from the dead letter's last checkpoint (default), or
+   * from scratch when the checkpoint itself is suspect.
+   */
+  resume?: boolean;
 }
 
 export interface JobInput {
@@ -101,6 +132,18 @@ export interface WorkerContext {
    * bail at the next checkpoint.
    */
   signal: AbortSignal;
+  /**
+   * The progress marker saved by an earlier attempt, or `undefined` on a fresh
+   * job (#334). A resumable handler starts from here.
+   */
+  checkpoint: unknown;
+  /**
+   * Records progress so a later attempt (a retry, a manual retry, or a
+   * recovered dead letter) can resume. The value must be JSON-serializable; it
+   * is stored as a deep copy, so later mutation by the handler has no effect.
+   * Throws a `TypeError` for values JSON cannot represent.
+   */
+  saveCheckpoint(value: unknown): void;
 }
 
 export type JobHandler = (
@@ -224,7 +267,7 @@ export interface WorkerFramework {
    * before idempotency and quota. A full gate returns `backpressure_full`
    * immediately without spending quota or recording an idempotency claim.
    */
-  submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode | QuotaErrorCode | "backpressure_full">;
+  submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode | QuotaErrorCode | "backpressure_full" | "invalid_job_input">;
   /** The quota store `submit()` charges. */
   quota(): QuotaStore;
   /** The idempotency records this framework has persisted. */
@@ -270,6 +313,26 @@ export interface WorkerFramework {
    * code the lifecycle table returns — instead of silently running again.
    */
   retryJob(id: string): Result<JobPayload, JobTransitionCode>;
+  /**
+   * Brings a dead letter back as a new queued job (#334). Requires
+   * `admin:recovery`.
+   *
+   * `dead_lettered` stays terminal in the lifecycle table, so the original job
+   * is never revived: it keeps its status and failure context for audit and
+   * gains `recoveredBy`. The replacement has a fresh attempt budget, the same
+   * operation, params, dedupe key and correlation id, `recoveredFrom` pointing
+   * back, and (unless `resume: false`) the dead letter's last checkpoint.
+   *
+   * Recovering the same dead letter again returns the existing replacement, so
+   * a retried recovery request never creates two jobs. A dead letter whose
+   * handler is still unregistered is refused, because it would dead-letter
+   * again immediately.
+   */
+  recoverDeadLetter(
+    id: string,
+    auth: AuthContext,
+    options?: RecoverDeadLetterOptions
+  ): Result<JobPayload, DeadLetterRecoveryCode>;
   deadLetter(id: string): Result<JobPayload, JobTransitionCode>;
   /** Asks the lifecycle table whether `event` is legal for a job in `status`. */
   canTransition(status: string, event: string): Result<true, JobTransitionCode>;
@@ -291,6 +354,19 @@ function errorCodeOf(error: unknown): string {
     if (typeof code === "string") return code;
   }
   return error instanceof Error ? error.name : "unknown";
+}
+
+/**
+ * Deep-copies a checkpoint through JSON, which is also what enforces that it is
+ * serializable. `undefined` means "no checkpoint" and passes through.
+ */
+function cloneCheckpoint(value: unknown): unknown {
+  if (value === undefined) return undefined;
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) {
+    throw new TypeError("Checkpoint must be JSON-serializable");
+  }
+  return JSON.parse(encoded) as unknown;
 }
 
 function findingDedupe(jobs: Map<string, JobPayload>, key: string): JobPayload | undefined {
@@ -490,7 +566,11 @@ export function createWorkerFramework(
     const context: WorkerContext = {
       correlationId: job.correlationId,
       attempt: job.attempts,
-      signal: controller.signal
+      signal: controller.signal,
+      checkpoint: cloneCheckpoint(job.checkpoint),
+      saveCheckpoint(value: unknown): void {
+        job.checkpoint = cloneCheckpoint(value);
+      }
     };
 
     try {
@@ -613,7 +693,7 @@ export function createWorkerFramework(
       return job;
     },
 
-    submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode | QuotaErrorCode | "backpressure_full"> {
+    submit(input: JobInput): Result<SubmitResult, IdempotencyErrorCode | QuotaErrorCode | "backpressure_full" | "invalid_job_input"> {
       // ── Backpressure gate check ────────────────────────────────────────────
       // When the framework has a gate covering this operation, we check capacity
       // before creating an idempotency claim or spending quota.
@@ -630,6 +710,12 @@ export function createWorkerFramework(
       // Replays are exempt: if we already have a completed record for this key
       // the job was already enqueued; it either succeeded or is still live, and
       // the gate's live count already includes it.
+      //
+      // Malformed input is refused before it can reach a gate, the quota or the
+      // idempotency digest (#333). The detail names the first violation.
+      const violation = validateJobInput(input);
+      if (violation) return err("invalid_job_input", violation);
+
       const gate = findGate(input.operation);
       if (gate) {
         const { live, maxConcurrent } = gate.stats();
@@ -868,6 +954,54 @@ export function createWorkerFramework(
       job.nextAttemptAt = undefined;
       job.attempts = 0;
       return ok(job);
+    },
+
+    recoverDeadLetter(
+      id: string,
+      auth: AuthContext,
+      options: RecoverDeadLetterOptions = {}
+    ): Result<JobPayload, DeadLetterRecoveryCode> {
+      if (!hasPermission(auth.role, DEAD_LETTER_RECOVERY_PERMISSION)) return err("unauthorized");
+      const deadLetter = jobs.get(id);
+      if (!deadLetter) return err("unknown_job");
+      if (deadLetter.status !== "dead_lettered") return err("not_dead_lettered");
+
+      if (deadLetter.recoveredBy) {
+        const existing = jobs.get(deadLetter.recoveredBy);
+        if (existing) return ok(existing);
+      }
+      if (!registrations.has(deadLetter.operation)) return err("unregistered");
+
+      const replacement: JobPayload = {
+        id: newCorrelationId(),
+        operation: deadLetter.operation,
+        params: { ...deadLetter.params },
+        dedupeKey: deadLetter.dedupeKey,
+        maxAttempts: deadLetter.maxAttempts,
+        attempts: 0,
+        status: workerJobMachine.initial() as JobStatus,
+        enqueuedAt: new Date().toISOString(),
+        correlationId: deadLetter.correlationId,
+        recoveredFrom: deadLetter.id,
+        ...(options.resume !== false && deadLetter.checkpoint !== undefined
+          ? { checkpoint: cloneCheckpoint(deadLetter.checkpoint) }
+          : {})
+      };
+      jobs.set(replacement.id, replacement);
+      deadLetter.recoveredBy = replacement.id;
+      emitTelemetry({
+        op: "worker.recovered",
+        actorType: "user",
+        result: "success",
+        correlationId: deadLetter.correlationId,
+        payload: {
+          operation: deadLetter.operation,
+          from: deadLetter.id,
+          to: replacement.id,
+          resumed: replacement.checkpoint !== undefined
+        }
+      });
+      return ok(replacement);
     },
 
     deadLetter(id: string): Result<JobPayload, JobTransitionCode> {

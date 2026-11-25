@@ -233,7 +233,8 @@ UTIX_USER_ROLE=service npm run synthetic:monitor -- --network testnet [--json]
 
 `.github/workflows/synthetic-monitor.yml` runs it every 30 minutes for testnet
 and mainnet, and can also be started by hand (`workflow_dispatch`). It needs
-Node 24 and no installed dependencies.
+Node 24 and the dev dependencies (`scripts/loader.mjs`, which resolves the `@/`
+alias, imports `typescript`), so the workflow runs `npm ci --ignore-scripts` first.
 
 | Step | Request | Checks |
 | :--- | :--- | :--- |
@@ -246,11 +247,16 @@ Node 24 and no installed dependencies.
 | :--- | :--- | :--- |
 | `healthy` | Every step passed on its first attempt, within budget | 0 |
 | `degraded` | Passed, but needed a retry, exceeded 5 s, or ingestion lags by > 5 ledgers | 0 |
-| `unhealthy` | A step failed; the journey stops at that step | 1 |
+| `unhealthy` | A step failed; the journey stops at that step, and the steps it never reached are listed with `skipped: true`, `attempts: 0` | 1 |
 | refused / crash | Role lacks `admin:health`, or the probe threw | 2 |
 
 Each run emits one `synthetic.journey` telemetry event that carries the
-correlation id printed in the report.
+correlation id printed in the report and `payload.journey`.
+
+A skipped step is never the cause of a failure: `status`, telemetry's
+`errorCode` and exit codes all come from the first step that ran and failed.
+An older page that is not needed (page one was short) is not part of the
+journey and is not listed at all.
 
 ### Failure and retry behaviour
 
@@ -284,3 +290,96 @@ correlation id printed in the report.
   `NEXT_PUBLIC_HORIZON_MAINNET_URL`.
 - The probe is read-only and changes no existing contract. To roll back, disable
   or delete the workflow. Nothing else depends on it.
+
+## High-Value Journeys (#368)
+
+`core/health/journeys.ts` extends synthetic monitoring from the one #269
+journey to every journey users depend on most. Each one makes the same Horizon
+calls as its tool, so the probe breaks when the tool would. All share the #269
+retry, timeout and skip engine (`core/health/probe.ts`).
+
+```bash
+UTIX_USER_ROLE=service npm run synthetic:monitor -- --journey account-balances [--network mainnet] [--json]
+```
+
+| Journey | Tool | Steps after `horizon.root` | Checks |
+| :--- | :--- | :--- | :--- |
+| `operation-history` | `operation-browser` | the #269 journey, unchanged | as above |
+| `account-balances` | `balance-viewer` | `operations.discover` → `account.load` (`GET /accounts/{id}`) | Same account returned; numeric `sequence`; every balance an exact, non-negative 7-decimal amount (never a float); an XLM line present |
+| `transaction-lookup` | `transaction-lookup` | `transactions.discover` (`GET /transactions?order=desc&limit=1`) → `transaction.load` (`GET /transactions/{hash}`) | 64-hex hash; the same transaction returned, with a boolean `successful` and a ledger ≥ 1 |
+| `fee-stats` | `fee-stats` | `fee_stats.load` (`GET /fee_stats`) | Integer-string fees; percentiles never decrease from `min` to `max`; `ledger_capacity_usage` within [0, 1] |
+
+Each journey opens with `horizon.root`, so a URL that points at the other
+network fails as `network_mismatch` instead of passing on the wrong data. No
+journey has a hard-coded fixture: accounts and transactions are found from the
+newest activity, so testnet resets cannot break them.
+
+- **Normal**: every step passes on its first attempt within 5 s → `healthy`.
+- **Retry**: HTTP 429/5xx, transport errors and timeouts are retried (3
+  attempts, 500 ms → 1 s, `Retry-After` honoured, no wait above 10 s); a
+  journey that needed a retry is `degraded`.
+- **Failure**: a contract failure (`malformed_payload`, `network_mismatch`,
+  `http_status`, `no_activity`) is not retried; the journey is `unhealthy` and
+  lists the steps it never reached as skipped.
+- **Authorization**: `admin:health` is checked before any request
+  (`synthetic_unauthorized`); an unknown id is `unknown_journey`.
+
+## Critical Workflow Monitoring (#410)
+
+`core/health/workflow-monitor.ts` runs the journey catalogue as one workflow and
+turns individual runs into alerts that operators can act on:
+
+```bash
+# Stateless (CI): one unhealthy critical journey fails the run.
+UTIX_USER_ROLE=service npm run synthetic:monitor -- --journey all
+# Stateful (cron on a host): alerts open after 2 failures in a row and resolve on recovery.
+UTIX_USER_ROLE=service npm run synthetic:monitor -- --journey all --state /var/lib/utix/synthetic-state.json
+```
+
+| Rule | Default | Why |
+| :--- | :--- | :--- |
+| An alert **opens** after `failureThreshold` consecutive `unhealthy` runs | 2 | One blip that outlived the in-run retries pages no one |
+| An open alert **resolves** after `recoveryThreshold` consecutive passing runs | 1 | `degraded` counts as passing for alerting, but still shows in the rollup |
+| An open alert does not re-fire while the failure continues | — | One page per incident |
+| History kept per journey | 20 runs | `availability` = passing runs / remembered runs |
+
+| Rollup | When | Exit code |
+| :--- | :--- | :--- |
+| `healthy` | No alert open and every journey's last run healthy | 0 |
+| `degraded` | A non-critical journey (`fee-stats`) alerting, or any journey's last run not healthy | 0 |
+| `unhealthy` | A critical journey alerting | 1 |
+| refused / crash | Role lacks `admin:health`, bad arguments, or the monitor threw | 2 |
+
+Telemetry: one `synthetic.workflow` event per run (rollup, per-journey status,
+number of transitions) and one `synthetic.alert` event per transition
+(`opened` → `result: failure`, `resolved` → `result: success`), all sharing the
+run's correlation id. Each journey still emits its own `synthetic.journey`.
+
+### Edge cases
+
+- **Isolation**: journeys run one after another (one run makes at most 12
+  requests, 36 with every retry), and a journey that fails, is refused or whose
+  runner throws (`probe_crashed`) never stops the others.
+- **Stateless schedulers** (GitHub Actions) start fresh each run, so the CLI
+  uses `failureThreshold: 1` without `--state`; flap suppression needs a state file.
+- **State file**: written atomically (temp file + rename). A missing file starts
+  fresh. An unreadable, malformed or newer-version file is reported and ignored
+  (`workflow_state_invalid`), and the in-memory state is left untouched.
+  Starting fresh can delay an alert by at most `failureThreshold` runs; it can
+  never invent one.
+- **Catalogue changes**: a journey removed from the catalogue is ignored when
+  state is imported, and a new one starts with empty history. A smaller
+  `historySize` keeps the newest runs.
+
+### Recovery and rollback
+
+- On an alert, run the journey alone with `--journey <id> --json` and read the
+  failed step's `errorCode`; find the run in telemetry by its correlation id.
+- To reset alert state, delete the state file. The next run starts fresh.
+- The state format is versioned (`WORKFLOW_STATE_VERSION = 1`). A future format
+  change must bump it, and older code then ignores the newer file instead of
+  misreading it.
+- Everything here is read-only against Horizon and additive to the #269
+  contract. `runSyntheticMonitor` keeps its report shape and exit codes. To roll
+  back, remove the "Run critical workflow monitor" workflow step; nothing else
+  depends on the new modules.

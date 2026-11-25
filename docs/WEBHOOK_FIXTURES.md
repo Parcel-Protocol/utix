@@ -39,8 +39,27 @@ adversarial webhook messages, each with the exact verdict
 ## Verification order
 
 Structure and size first (`Malformed webhook message: <reason>`), then clock
-skew, then nonce replay, then the HMAC. Malformed input is rejected before any
-hashing, so an oversized or hostile payload costs nothing and never throws.
+skew, subscriber authorization, HMAC, then the atomic nonce claim. Malformed
+input is rejected before any hashing, so an oversized or hostile payload costs
+nothing and never throws. A nonce is not consumed by an invalid signature.
+
+## Durable replay protection and idempotent retry
+
+`WebhookVerifier` accepts an optional `ReplayProtectionStore`. The in-memory
+implementation remains the default; production adapters should persist nonce
+records and implement `claim()` atomically across workers. A store read/write
+failure returns `replay_store_unavailable` and fails closed. The verifier
+retains the 50,000-record safety bound; a durable adapter should have sufficient
+capacity and implement `trim()` consistently.
+
+`verifyReplayWindow(..., { allowIdempotentRetry: true })` returns
+`{ valid: true, replayed: true }` only after re-verifying the signature and
+matching the same message id, nonce, event, payload, and subscriber context.
+Callers must treat `replayed` as an instruction to return the prior delivery
+result without applying the event again. The default remains strict rejection.
+Changing payload or using a different identity with the nonce is rejected.
+Delivery-attempt recording also ignores a repeated attempt id, avoiding
+duplicate subscriber counters.
 
 ## Adding a case
 
@@ -55,8 +74,11 @@ regressed.
 - Limits are `MAX_WEBHOOK_DATA_LENGTH` and `MAX_WEBHOOK_NONCE_LENGTH` in
   `core/webhooks/verification.ts`. A legitimate sender above them is rejected as
   malformed; raise the constant rather than skipping the check.
-- Replay records live in memory per verifier; a restart forgets nonces, and the
-  clock-skew window is the remaining protection.
+- The default replay records live in memory per verifier; a restart forgets
+  nonces, and the clock-skew window is the remaining protection. Inject a
+  durable, atomic adapter to retain claims across restarts. Clearing that
+  adapter deliberately reopens the replay window, so only do so during
+  controlled recovery.
 - Rolling back means removing the `malformedReason` guard; valid messages are
   unaffected, malformed ones go back to throwing or failing the HMAC.
 

@@ -1,7 +1,8 @@
 name: Synthetic monitor
 
 # Probes the critical journey (account operation history and its older page)
-# against live Horizon. See docs/OPERATIONAL_HEALTH.md#synthetic-monitoring-269.
+# and the high-value journey catalogue against live Horizon.
+# See docs/OPERATIONAL_HEALTH.md (#269, #368, #410).
 on:
   schedule:
     - cron: "*/30 * * * *"
@@ -34,9 +35,22 @@ jobs:
         with:
           node-version: 24
 
-      # The probe imports no npm packages, so no install step is needed.
+      # The probe itself imports no npm packages, but scripts/loader.mjs (which
+      # resolves the `@/` alias) imports `typescript`, so dev dependencies are needed.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
       - name: Run synthetic monitor
         env:
           UTIX_USER_ROLE: service
           HORIZON_URL: ${{ matrix.horizon }}
         run: npm run synthetic:monitor -- --network ${{ matrix.network }}
+
+      # Every high-value journey (#368) as one workflow (#410). Each run is
+      # stateless here, so one unhealthy critical journey fails the step.
+      - name: Run critical workflow monitor
+        if: ${{ !cancelled() }}
+        env:
+          UTIX_USER_ROLE: service
+          HORIZON_URL: ${{ matrix.horizon }}
+        run: npm run synthetic:monitor -- --network ${{ matrix.network }} --journey all

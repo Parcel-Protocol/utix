@@ -20,7 +20,8 @@
  *   4. `account.operations.older` the same with `cursor=<last paging_token>`,
  *                                 only when page one was full — the "Load more" step.
  *
- * Transient failures (HTTP 429, 5xx, transport errors, timeouts) are retried
+ * The retry/timeout engine lives in `probe.ts` (shared with the journey
+ * catalogue, #368). Transient failures (HTTP 429, 5xx, transport errors, timeouts) are retried
  * with exponential backoff, honouring `Retry-After`. Contract failures (wrong
  * passphrase, malformed body, broken pagination) are not retried: retrying
  * cannot fix them. Running the probe is an operator action gated on
@@ -37,6 +38,17 @@ import { HORIZON_URLS, NETWORK_PASSPHRASES } from "@/core/network/config";
 import type { StellarNetwork } from "@/core/network/types";
 import { err, ok, type Result } from "@/core/result/result";
 import { emitTelemetry, newCorrelationId } from "@/core/telemetry/telemetry";
+import {
+  createProbe,
+  embeddedRecords,
+  firstFailure,
+  journeyStatus,
+  type ProbeStepResult,
+  type SyntheticErrorCode
+} from "./probe";
+
+// Kept importable from here: the engine moved to `probe.ts` (#368), the contract did not.
+export { parseRetryAfter, type SyntheticErrorCode } from "./probe";
 
 export type SyntheticStepName =
   | "horizon.root"
@@ -44,24 +56,7 @@ export type SyntheticStepName =
   | "account.operations"
   | "account.operations.older";
 
-export type SyntheticErrorCode =
-  | "rate_limited"
-  | "server_error"
-  | "transport"
-  | "timeout"
-  | "http_status"
-  | "malformed_payload"
-  | "network_mismatch"
-  | "no_activity"
-  | "pagination_broken";
-
-export interface SyntheticStepResult {
-  readonly step: SyntheticStepName;
-  readonly ok: boolean;
-  readonly attempts: number;
-  readonly latencyMs: number;
-  readonly errorCode?: SyntheticErrorCode;
-}
+export type SyntheticStepResult = ProbeStepResult<SyntheticStepName>;
 
 export interface SyntheticReport {
   readonly network: StellarNetwork;
@@ -99,44 +94,13 @@ export interface SyntheticMonitorOptions {
 /** Mirrors the operation browser's page size, so page two is exercised exactly as users reach it. */
 export const SYNTHETIC_PAGE_SIZE = 20;
 
-const DEFAULTS = {
-  timeoutMs: 10_000,
-  maxAttempts: 3,
-  baseDelayMs: 500,
-  maxDelayMs: 10_000,
+export const SYNTHETIC_DEFAULTS = {
   latencyBudgetMs: 5_000,
   maxIngestLagLedgers: 5
 } as const;
 
-const PUBLIC_KEY = /^G[A-Z2-7]{55}$/;
+export const PUBLIC_KEY = /^G[A-Z2-7]{55}$/;
 const PAGING_TOKEN = /^\d+$/;
-
-interface Attempt {
-  readonly result: Result<unknown, SyntheticErrorCode>;
-  readonly retryable: boolean;
-  readonly retryAfterMs?: number;
-}
-
-/**
- * `Retry-After` is delay-seconds or an HTTP-date (RFC 9110 §10.2.3). All three
- * HTTP-date forms (IMF-fixdate, RFC 850, asctime) open with a day name, which
- * keeps `Date.parse` from reading a value like `-1` as a year.
- */
-export function parseRetryAfter(value: string | null, now: number): number | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1_000;
-  if (!/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/.test(trimmed)) return undefined;
-  const at = Date.parse(trimmed);
-  return Number.isNaN(at) ? undefined : Math.max(0, at - now);
-}
-
-function records(body: unknown): Record<string, unknown>[] | null {
-  const list = (body as { _embedded?: { records?: unknown } } | null)?._embedded?.records;
-  return Array.isArray(list) && list.every((item) => item !== null && typeof item === "object")
-    ? (list as Record<string, unknown>[])
-    : null;
-}
 
 /**
  * Paging tokens must be numeric, unique and strictly descending, and every one
@@ -154,14 +118,26 @@ function isDescendingPage(page: Record<string, unknown>[], cursor?: string): boo
   return true;
 }
 
-/**
- * A step that never ran (because an earlier step failed) is recorded as a
- * skipped failure with `errorCode: "skipped"` so the report shows the whole
- * journey, not just the prefix that executed. `attempts: 0` distinguishes it
- * from a real failed attempt.
- */
-function skippedStep(name: SyntheticStepName): SyntheticStepResult {
-  return { step: name, ok: false, attempts: 0, latencyMs: 0, errorCode: "skipped" };
+/** Validates Horizon's root document and returns the ingestion lag. Shared with the journey catalogue (#368). */
+export function validateHorizonRoot(
+  body: unknown,
+  network: StellarNetwork
+): Result<{ ingestLag: number }, SyntheticErrorCode> {
+  const { network_passphrase, core_latest_ledger, history_latest_ledger } = (body ?? {}) as Record<string, unknown>;
+  if (typeof network_passphrase !== "string" || !Number.isSafeInteger(core_latest_ledger) || !Number.isSafeInteger(history_latest_ledger)) {
+    return err("malformed_payload");
+  }
+  if (network_passphrase !== NETWORK_PASSPHRASES[network]) return err("network_mismatch");
+  return ok({ ingestLag: (core_latest_ledger as number) - (history_latest_ledger as number) });
+}
+
+/** Picks the source account of the newest operation, so no fixture is needed. Shared with #368. */
+export function validateActiveAccount(body: unknown): Result<string, SyntheticErrorCode> {
+  const page = embeddedRecords(body);
+  if (!page) return err("malformed_payload");
+  if (page.length === 0) return err("no_activity");
+  const source = page[0].source_account;
+  return typeof source === "string" && PUBLIC_KEY.test(source) ? ok(source) : err("malformed_payload");
 }
 
 export async function runSyntheticMonitor(
@@ -181,136 +157,56 @@ export async function runSyntheticMonitor(
     return err("synthetic_unauthorized");
   }
 
-  // `??` per field, so an explicit `undefined` keeps the default instead of
-  // turning the timeout into an immediate abort.
-  const settings = {
-    timeoutMs: options.timeoutMs ?? DEFAULTS.timeoutMs,
-    maxAttempts: options.maxAttempts ?? DEFAULTS.maxAttempts,
-    baseDelayMs: options.baseDelayMs ?? DEFAULTS.baseDelayMs,
-    maxDelayMs: options.maxDelayMs ?? DEFAULTS.maxDelayMs,
-    latencyBudgetMs: options.latencyBudgetMs ?? DEFAULTS.latencyBudgetMs,
-    maxIngestLagLedgers: options.maxIngestLagLedgers ?? DEFAULTS.maxIngestLagLedgers
-  };
-  const fetchImpl = options.fetch ?? fetch;
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const latencyBudgetMs = options.latencyBudgetMs ?? SYNTHETIC_DEFAULTS.latencyBudgetMs;
+  const maxIngestLagLedgers = options.maxIngestLagLedgers ?? SYNTHETIC_DEFAULTS.maxIngestLagLedgers;
   const now = options.now ?? (() => Date.now());
   const clock = options.clock ?? (() => Date.now());
-  const base = `${(options.horizonUrl ?? HORIZON_URLS[options.network]).replace(/\/+$/, "")}/`;
-  const steps: SyntheticStepResult[] = [];
+  const probe = createProbe<SyntheticStepName>({
+    baseUrl: options.horizonUrl ?? HORIZON_URLS[options.network],
+    fetch: options.fetch,
+    sleep: options.sleep,
+    now,
+    timeoutMs: options.timeoutMs,
+    maxAttempts: options.maxAttempts,
+    baseDelayMs: options.baseDelayMs,
+    maxDelayMs: options.maxDelayMs
+  });
   const startedAt = now();
 
-  async function attempt(url: string): Promise<Attempt> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
-    try {
-      const response = await fetchImpl(url, { headers: { Accept: "application/json" }, signal: controller.signal });
-      if (response.status === 429) {
-        return {
-          result: err("rate_limited"),
-          retryable: true,
-          retryAfterMs: parseRetryAfter(response.headers.get("retry-after"), now())
-        };
-      }
-      if (response.status >= 500) return { result: err("server_error"), retryable: true };
-      if (!response.ok) return { result: err("http_status"), retryable: false };
-      try {
-        return { result: ok(await response.json()), retryable: false };
-      } catch {
-        return { result: err("malformed_payload"), retryable: false };
-      }
-    } catch {
-      return { result: err(controller.signal.aborted ? "timeout" : "transport"), retryable: true };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
+  const root = await probe.step("horizon.root", "", {}, (body) => validateHorizonRoot(body, options.network));
 
-  /** Fetches with retries, validates, and records the step. Null means the journey stops. */
-  async function step<T>(
-    name: SyntheticStepName,
-    path: string,
-    query: Record<string, string>,
-    validate: (body: unknown) => Result<T, SyntheticErrorCode>
-  ): Promise<T | null> {
-    const url = new URL(path, base);
-    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
-
-    const started = now();
-    let attempts = 0;
-    let outcome: Attempt;
-    for (;;) {
-      attempts += 1;
-      outcome = await attempt(url.toString());
-      if (!outcome.retryable || attempts >= settings.maxAttempts) break;
-      const backoff = settings.baseDelayMs * 2 ** (attempts - 1);
-      await sleep(Math.min(Math.max(backoff, outcome.retryAfterMs ?? 0), settings.maxDelayMs));
-    }
-
-    const validated = outcome.result.ok ? validate(outcome.result.value) : outcome.result;
-    steps.push({
-      step: name,
-      ok: validated.ok,
-      attempts,
-      latencyMs: now() - started,
-      ...(validated.ok ? {} : { errorCode: validated.code })
-    });
-    return validated.ok ? validated.value : null;
-  }
-
-  const expectedPassphrase = NETWORK_PASSPHRASES[options.network];
-  const root = await step("horizon.root", "", {}, (body) => {
-    const { network_passphrase, core_latest_ledger, history_latest_ledger } = (body ?? {}) as Record<string, unknown>;
-    if (typeof network_passphrase !== "string" || !Number.isSafeInteger(core_latest_ledger) || !Number.isSafeInteger(history_latest_ledger)) {
-      return err("malformed_payload");
-    }
-    if (network_passphrase !== expectedPassphrase) return err("network_mismatch");
-    return ok({ ingestLag: (core_latest_ledger as number) - (history_latest_ledger as number) });
-  });
-
-  const accountId =
-    root &&
-    (await step("operations.discover", "operations", { order: "desc", limit: "1" }, (body) => {
-      const page = records(body);
-      if (!page) return err("malformed_payload");
-      if (page.length === 0) return err("no_activity");
-      const source = page[0].source_account;
-      return typeof source === "string" && PUBLIC_KEY.test(source) ? ok(source) : err("malformed_payload");
-    }));
-  if (!root) steps.push(skippedStep("operations.discover"));
+  const accountId = root && (await probe.step("operations.discover", "operations", { order: "desc", limit: "1" }, validateActiveAccount));
+  if (!root) probe.skip("operations.discover");
 
   const operationsPath = accountId ? `accounts/${encodeURIComponent(accountId)}/operations` : "";
   const query = { order: "desc", limit: String(SYNTHETIC_PAGE_SIZE) };
   const firstPage =
     accountId &&
-    (await step("account.operations", operationsPath, query, (body) => {
-      const page = records(body);
+    (await probe.step("account.operations", operationsPath, query, (body) => {
+      const page = embeddedRecords(body);
       if (!page) return err("malformed_payload");
       // The account was just discovered from its own operation, so an empty page is broken.
       if (page.length === 0 || !isDescendingPage(page)) return err("pagination_broken");
       return ok(page);
     }));
-  if (!accountId) steps.push(skippedStep("account.operations"));
+  if (!accountId) probe.skip("account.operations");
 
+  // A short first page means there is no older page: the UI hides "Load more",
+  // so the step is not part of this journey and is not listed (#269).
   if (firstPage && firstPage.length === SYNTHETIC_PAGE_SIZE) {
     const cursor = firstPage[firstPage.length - 1].paging_token as string;
-    await step("account.operations.older", operationsPath, { ...query, cursor }, (body) => {
-      const page = records(body);
+    await probe.step("account.operations.older", operationsPath, { ...query, cursor }, (body) => {
+      const page = embeddedRecords(body);
       if (!page) return err("malformed_payload");
       return isDescendingPage(page, cursor) ? ok(page) : err("pagination_broken");
     });
   }
-  if (firstPage && firstPage.length < SYNTHETIC_PAGE_SIZE) steps.push(skippedStep("account.operations.older"));
 
+  const steps = probe.steps;
   const durationMs = now() - startedAt;
-  const failed = steps.find((result) => !result.ok);
+  const failed = firstFailure(steps);
   const ingestLagLedgers = root?.ingestLag;
-  const status: HealthStatus = failed
-    ? "unhealthy"
-    : steps.some((result) => result.attempts > 1) ||
-        durationMs > settings.latencyBudgetMs ||
-        (ingestLagLedgers ?? 0) > settings.maxIngestLagLedgers
-      ? "degraded"
-      : "healthy";
+  const status = journeyStatus(steps, durationMs, latencyBudgetMs, (ingestLagLedgers ?? 0) > maxIngestLagLedgers);
 
   emitTelemetry({
     op: "synthetic.journey",
@@ -319,7 +215,7 @@ export async function runSyntheticMonitor(
     latencyMs: durationMs,
     correlationId,
     errorCode: failed?.errorCode,
-    payload: { network: options.network, status, steps: steps.map(({ step: name, ok: passed, attempts }) => ({ name, passed, attempts })) }
+    payload: { journey: "operation-history", network: options.network, status, steps: steps.map(({ step: name, ok: passed, attempts }) => ({ name, passed, attempts })) }
   });
 
   return ok({
@@ -328,7 +224,7 @@ export async function runSyntheticMonitor(
     correlationId,
     startedAt: new Date(clock()).toISOString(),
     durationMs,
-    steps,
+    steps: [...steps],
     ...(ingestLagLedgers === undefined ? {} : { ingestLagLedgers })
   });
 }

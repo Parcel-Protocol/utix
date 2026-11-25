@@ -5,6 +5,7 @@
  * for sensitive operational data (audit logs, exports, notifications, idempotency).
  */
 
+import { createHash } from "node:crypto";
 import { err, ok, type Result } from "@/core/result/result";
 import type { AuditActor } from "./audit";
 
@@ -13,7 +14,28 @@ export type RetentionErrorCode =
   | "retention_failed"
   | "retention_retries_exhausted"
   | "invalid_policy"
-  | "invalid_deletion_request";
+  | "invalid_deletion_request"
+  | "verification_failed";
+
+export interface DeletionVerificationProof {
+  readonly recordKind: string;
+  readonly verifiedAt: string;
+  readonly verifiedBy: AuditActor;
+  readonly deletedIdsCount: number;
+  readonly activeRecordsCount: number;
+  readonly verifiedNonExistence: boolean;
+  readonly ttlCompliant: boolean;
+  readonly capacityCompliant: boolean;
+  readonly scrubCompliant: boolean;
+  readonly stateDigest: string;
+  readonly valid: boolean;
+  readonly violations: readonly string[];
+}
+
+export interface RetentionEnforcementVerificationResult<T = unknown> {
+  readonly sweep: RetentionSweepResult<T>;
+  readonly verification: DeletionVerificationProof;
+}
 
 export interface RetentionPolicy {
   readonly recordKind: string;
@@ -46,6 +68,14 @@ export interface RetentionSweepResult<T = unknown> {
 const EMBEDDED_SECRET_PATTERN = /\b[SM][A-Z2-7]{55}\b/g;
 const EMBEDDED_BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/-]+\b/gi;
 const SENSITIVE_KEY_PATTERN = /secret|seed|key|token|password|passphrase|auth|credential|bearer|cookie/i;
+
+function containsUnredactedSensitiveValue(value: unknown, key?: string): boolean {
+  if (key && SENSITIVE_KEY_PATTERN.test(key)) return value !== "[REDACTED]";
+  if (typeof value === "string") return EMBEDDED_SECRET_PATTERN.test(value) || EMBEDDED_BEARER_PATTERN.test(value);
+  if (Array.isArray(value)) return value.some((item) => containsUnredactedSensitiveValue(item));
+  if (value && typeof value === "object") return Object.entries(value as Record<string, unknown>).some(([name, child]) => containsUnredactedSensitiveValue(child, name));
+  return false;
+}
 
 export function scrubSensitiveValue(value: unknown): { scrubbed: unknown; modified: boolean } {
   if (value === null || value === undefined) {
@@ -249,5 +279,171 @@ export class OperationalDataRetentionManager {
     } catch {
       return err("retention_failed");
     }
+  }
+
+  /**
+   * Cryptographically verifies deletion and retention constraints (#400).
+   *
+   * Verifies:
+   * 1. Non-existence: None of the deleted record IDs appear in the active records.
+   * 2. Retention bounds: No active record exceeds the TTL threshold.
+   * 3. Capacity bounds: Active records count does not exceed maxRecords.
+   * 4. Scrubbing compliance: Active records do not expose unredacted sensitive operational secrets.
+   * 5. State integrity: Deterministic SHA-256 state digest over remaining records.
+   *
+   * Time Complexity: O(N + D) where N is active records and D is deleted IDs.
+   * Space Complexity: O(D) for deleted ID set lookup.
+   */
+  public static verifyDeletion<T extends { id?: string; at?: string; timestamp?: string | number | Date }>(
+    activeRecords: readonly T[],
+    deletedRecordIds: readonly string[],
+    policy: RetentionPolicy,
+    options: DeletionOptions
+  ): Result<DeletionVerificationProof, RetentionErrorCode> {
+    if (options.actor.kind === "user") {
+      return err("retention_denied");
+    }
+
+    if (!policy.recordKind || policy.recordKind.trim().length === 0) {
+      return err("invalid_policy");
+    }
+
+    if (!options.reason || options.reason.trim().length === 0) {
+      return err("invalid_deletion_request");
+    }
+
+    try {
+      const violations: string[] = [];
+      const deletedSet = new Set(deletedRecordIds);
+
+      // 1. Non-existence confirmation
+      let nonExistenceConfirmed = true;
+      for (const rec of activeRecords) {
+        if (rec.id && deletedSet.has(rec.id)) {
+          nonExistenceConfirmed = false;
+          violations.push(`Deleted record id "${rec.id}" still present in active records`);
+        }
+      }
+
+      // 2. TTL compliance check
+      const now = options.now ? options.now() : Date.now();
+      let ttlCompliant = true;
+      if (policy.ttlMs !== undefined) {
+        for (const rec of activeRecords) {
+          let ts = now;
+          if (rec.at) {
+            const parsed = Date.parse(rec.at);
+            if (!Number.isNaN(parsed)) ts = parsed;
+          } else if (rec.timestamp) {
+            const parsed = typeof rec.timestamp === "number" ? rec.timestamp : Date.parse(String(rec.timestamp));
+            if (!Number.isNaN(parsed)) ts = parsed;
+          }
+          if (now - ts > policy.ttlMs) {
+            ttlCompliant = false;
+            violations.push(`Record "${rec.id ?? 'unknown'}" exceeds TTL of ${policy.ttlMs}ms (age: ${now - ts}ms)`);
+            break;
+          }
+        }
+      }
+
+      // 3. Capacity compliance check
+      let capacityCompliant = true;
+      if (policy.maxRecords !== undefined && activeRecords.length > policy.maxRecords) {
+        capacityCompliant = false;
+        violations.push(`Active records count (${activeRecords.length}) exceeds maximum limit (${policy.maxRecords})`);
+      }
+
+      // 4. Scrub compliance check
+      let scrubCompliant = true;
+      if (policy.scrubSensitiveFields !== false) {
+        for (const rec of activeRecords) {
+          if (containsUnredactedSensitiveValue(rec)) {
+            scrubCompliant = false;
+            violations.push(`Active record "${rec.id ?? 'unknown'}" contains unredacted sensitive operational fields`);
+            break;
+          }
+        }
+      }
+
+      // 5. State digest computation (SHA-256)
+      const sortedIds = activeRecords
+        .map((r) => r.id ?? "")
+        .filter(Boolean)
+        .sort();
+      const digestPayload = `${policy.recordKind}:${sortedIds.join(",")}:${deletedRecordIds.length}`;
+      const stateDigest = createHash("sha256").update(digestPayload).digest("hex");
+
+      const valid = violations.length === 0;
+
+      return ok({
+        recordKind: policy.recordKind,
+        verifiedAt: new Date(now).toISOString(),
+        verifiedBy: options.actor,
+        deletedIdsCount: deletedRecordIds.length,
+        activeRecordsCount: activeRecords.length,
+        verifiedNonExistence: nonExistenceConfirmed,
+        ttlCompliant,
+        capacityCompliant,
+        scrubCompliant,
+        stateDigest,
+        valid,
+        violations
+      });
+    } catch {
+      return err("verification_failed");
+    }
+  }
+
+  /**
+   * Executes retention sweep and verifies deletion and compliance (#400).
+   *
+   * Combines policy enforcement with cryptographic verification, returning
+   * both sweep statistics and a tamper-evident verification proof.
+   *
+   * Time Complexity: O(N) where N is number of records.
+   * Space Complexity: O(N) for record retention and verification proofs.
+   */
+  public static async enforceRetentionWithVerification<
+    T extends { id?: string; at?: string; timestamp?: string | number | Date }
+  >(
+    records: readonly T[],
+    policy: RetentionPolicy,
+    options: DeletionOptions
+  ): Promise<Result<RetentionEnforcementVerificationResult<T>, RetentionErrorCode>> {
+    const sweepResult = await this.enforceRetention(records, policy, options);
+    if (!sweepResult.ok) {
+      return err(sweepResult.code);
+    }
+
+    const sweep = sweepResult.value;
+    const retainedIds = new Set(sweep.retainedRecords.map((record) => record.id).filter(Boolean));
+    const retainedSet = new Set(sweep.retainedRecords);
+    const deletedIds: string[] = [];
+
+    for (const r of records) {
+      if (r.id && !retainedIds.has(r.id) && !retainedSet.has(r)) {
+        deletedIds.push(r.id);
+      }
+    }
+
+    const verificationResult = this.verifyDeletion(
+      sweep.retainedRecords,
+      deletedIds,
+      policy,
+      options
+    );
+
+    if (!verificationResult.ok) {
+      return err(verificationResult.code);
+    }
+
+    if (!verificationResult.value.valid && !options.dryRun) {
+      return err("verification_failed");
+    }
+
+    return ok({
+      sweep,
+      verification: verificationResult.value
+    });
   }
 }

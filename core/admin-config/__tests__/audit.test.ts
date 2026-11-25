@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
 import {
   getAuditTrail,
   recordAudit,
@@ -6,6 +7,14 @@ import {
   type AuditInput
 } from "@/core/audit/audit";
 import { createAdminConfigStore } from "@/core/admin-config/store";
+import { createEd25519AuditSigner } from "@/core/audit/signed-receipt";
+
+const keyPair = generateKeyPairSync("ed25519");
+const receiptSigner = createEd25519AuditSigner({
+  signerId: "test-admin-signer",
+  privateKey: keyPair.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+  publicKey: keyPair.publicKey.export({ type: "spki", format: "pem" }).toString()
+});
 
 function baseInput(overrides: Partial<AuditInput> = {}): AuditInput {
   return {
@@ -75,15 +84,15 @@ describe("admin configuration audit evidence", () => {
     expect(event).toBeDefined();
     expect(event!.before).not.toHaveProperty("nested");
     expect(event!.after).not.toHaveProperty("internal");
-    expect(event!.after.seedHint).toBe("[REDACTED]");
+    expect(event?.after?.seedHint).toBe("[REDACTED]");
     expect(event!.after).toEqual({ "network.endpoint": "https://y", seedHint: "[REDACTED]" });
   });
 
   it("keeps the trail append-only: both changes are retained, oldest first", () => {
     const store = createAdminConfigStore({
+      receiptSigner,
       record: (input) => {
-        const result = recordAudit(input);
-        return result.ok ? result.value : undefined;
+        return recordAudit(input);
       }
     });
     store.setConfig({

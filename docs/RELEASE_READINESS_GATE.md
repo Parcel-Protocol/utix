@@ -71,3 +71,22 @@ node scripts/release-readiness-gate.mjs --json
 2. **If Production Rollback is Required Post-Release**:
    - Follow the disaster recovery runbook (`npm run recovery:validate`).
    - Apply reverse migration via `MigrationRunner.execute(migration, records, { autoRollbackOnFailure: true })`.
+
+## Plan-level migration and rollback checks (#339)
+
+The per-migration checks above look at each migration on its own. Setting `currentVersion` (the deployed schema version) in the `MigrationReleaseConfig` also checks the plan as a whole. The same checks are available standalone through `checkMigrationPlan` in `core/migration/plan-checks.ts`.
+
+| Check | Fails when |
+|---|---|
+| `migration_chain_continuity` | The plan does not run contiguously from `currentVersion` to `targetVersion`. This covers a gap, an overlap, a wrong starting version, a step that does not move forward, a duplicate migration id, a target below the deployed version, or an empty plan when the version has to change |
+| `migration_rollback_readiness` | A migration above `low` risk has no `rollback` handler, or a `high`/`critical` one has no `rollbackChecks` |
+| `migration_rollback_rehearsal` | Only when `rehearsalRecords` is set: the sample goes through dry run → apply → post-checks → rollback → rollback checks, chained across the plan. Fails on any failed check, any handler that throws (the rehearsal stops there), or a rollback that does not restore an identical copy of its input |
+
+Edge cases:
+
+- **Opt-in.** Without `currentVersion` the evaluation behaves exactly as before, so existing callers and reports are unchanged. Set it on every new release.
+- **Authorization first.** An unauthorized actor is rejected before any plan check runs, so no migration handler executes on their behalf.
+- **Caller data is never mutated.** The rehearsal deep-copies the sample through JSON, so it must be JSON-representable.
+- **Low-risk migrations** may stay forward-fix-only. Their documented `forwardFixNotes` are still required by the per-migration check.
+
+Recovery: a failing plan check blocks the release before anything is applied. Fix the plan, by adding the missing migration, rollback handler or rollback check, and re-run the evaluation. Nothing has to be undone.

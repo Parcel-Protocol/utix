@@ -38,6 +38,7 @@ class CrossDeviceSessionManager {
       id: `session-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       userId,
       createdAt: new Date(),
+      revoked: false,
       devices: [
         {
           ...device,
@@ -239,7 +240,7 @@ class CrossDeviceSessionManager {
     const conflicts: SyncConflict[] = [];
 
     const syncs = this.stateSyncs.get(session.id) || [];
-    if (syncs.length < 2) return conflicts;
+    if (syncs.length < 1) return conflicts;
 
     const lastOtherSync = [...syncs].reverse().find(s => s.deviceId !== deviceId);
     if (!lastOtherSync) return conflicts;
@@ -247,8 +248,7 @@ class CrossDeviceSessionManager {
     for (const [key, value] of Object.entries(newState)) {
       if (
         lastOtherSync.state[key] !== undefined &&
-        JSON.stringify(lastOtherSync.state[key]) !== JSON.stringify(value) &&
-        JSON.stringify(session.state[key]) !== JSON.stringify(lastOtherSync.state[key])
+        JSON.stringify(lastOtherSync.state[key]) !== JSON.stringify(value)
       ) {
         conflicts.push({
           field: key,
@@ -503,6 +503,7 @@ class CrossDeviceSessionManager {
       if (exceptDeviceId) {
         const hasExceptDevice = session.devices.some(d => d.id === exceptDeviceId);
         if (hasExceptDevice) {
+          session.revoked = false;
           this.revokedTokens.add(session.syncToken);
           session.syncToken = this.generateSyncToken();
 

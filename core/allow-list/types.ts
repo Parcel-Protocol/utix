@@ -21,6 +21,11 @@ export interface DestinationInfo {
   readonly kind: "stellar_public_key" | "allowed_list";
 }
 
+export interface ContentInfo {
+  readonly content: string;
+  readonly hash: string;
+}
+
 export type AllowListErrorCode =
   | "url_invalid"
   | "url_not_allowed"
@@ -30,7 +35,10 @@ export type AllowListErrorCode =
   | "file_too_large"
   | "destination_invalid"
   | "destination_not_allowed"
-  | "destination_is_secret";
+  | "destination_is_secret"
+  | "content_invalid"
+  | "content_not_allowed"
+  | "content_too_large";
 
 export interface UrlPolicy {
   readonly allowedSchemes: readonly string[];
@@ -54,11 +62,25 @@ export interface UrlValidator {
 }
 
 export interface FileTypeValidator {
-  (fileName: string, mime: string | null, size: number): Result<FileTypeInfo, AllowListErrorCode>;
+  (
+    fileName: string,
+    mime: string | null,
+    size: number,
+  ): Result<FileTypeInfo, AllowListErrorCode>;
 }
 
 export interface DestinationValidator {
   (destination: string): Result<DestinationInfo, AllowListErrorCode>;
+}
+
+export interface ContentPolicy {
+  readonly allowedHashes: readonly string[];
+  readonly allowedPatterns: readonly RegExp[];
+  readonly maxContentSize: number;
+}
+
+export interface ContentValidator {
+  (content: string): Result<ContentInfo, AllowListErrorCode>;
 }
 
 /**
@@ -72,9 +94,9 @@ export const DEFAULT_URL_POLICY: UrlPolicy = {
     "horizon.stellar.org",
     "soroban-testnet.stellar.org",
     "mainnet.sorobanrpc.com",
-    "friendbot.stellar.org"
+    "friendbot.stellar.org",
   ],
-  allowedPorts: []
+  allowedPorts: [],
 };
 
 /**
@@ -89,9 +111,9 @@ export const DEFAULT_FILE_TYPE_POLICY: FileTypePolicy = {
     "image/png",
     "image/jpeg",
     "image/svg+xml",
-    "text/plain"
+    "text/plain",
   ],
-  maxSize: 10 * 1024 * 1024
+  maxSize: 10 * 1024 * 1024,
 };
 
 /**
@@ -100,5 +122,15 @@ export const DEFAULT_FILE_TYPE_POLICY: FileTypePolicy = {
  */
 export const DEFAULT_DESTINATION_POLICY: DestinationPolicy = {
   allowedDestinations: [],
-  allowStellarPublicKeys: true
+  allowStellarPublicKeys: true,
+};
+
+/**
+ * Default content allow-list: empty hash and pattern lists, 10 MiB max.
+ * Content validation is disabled by default; callers must opt-in with a policy.
+ */
+export const DEFAULT_CONTENT_POLICY: ContentPolicy = {
+  allowedHashes: [],
+  allowedPatterns: [],
+  maxContentSize: 10 * 1024 * 1024,
 };

@@ -45,7 +45,9 @@ npm run check
 ```
 
 This runs the registry generation, ESLint, the full test suite, the feature
-contract check and a production build. CI runs exactly the same thing.
+contract check and a production build. CI runs exactly the same thing. See
+[DEVELOPMENT.md](./DEVELOPMENT.md) for CI concurrency behavior and the target
+branch for pull requests.
 
 ## What reviewers look for
 

@@ -31,7 +31,9 @@ export type DuplicateScanErrorCode =
   | "request_failed"
   /** A review action was attempted on a group whose current state does not
    *  allow that transition. */
-  | "invalid_transition";
+  | "invalid_transition"
+  /** The caller lacks elevated privileges to perform the review or rollback action. */
+  | "permission_denied";
 
 // ---------------------------------------------------------------------------
 // Core domain types
@@ -116,6 +118,16 @@ export interface DuplicateScanResult {
 export interface DuplicateScanInput {
   hashes: string[];
   network: string;
+}
+
+export interface MergePlan {
+  readonly groupId: string;
+  readonly primaryTransaction: FetchedTransaction;
+  readonly duplicateTransactions: readonly FetchedTransaction[];
+  readonly matchingFields: readonly string[];
+  readonly differingFields: readonly string[];
+  readonly recommendation: "merge_confirmed" | "review_differing_fields" | "distinct_transactions";
+  readonly confidenceScore: number;
 }
 
 /** Parameters for a single review action. */

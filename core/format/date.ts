@@ -36,7 +36,11 @@ export function formatDateTime(value: string | number | Date, locale?: Locales):
 
 /** Formats a Unix timestamp in seconds, as used by transaction time bounds. */
 export function formatUnixSeconds(seconds: bigint | string | number, locale?: Locales): string {
-  const ms = BigInt(seconds) * 1_000n;
+  // `BigInt` throws on a fraction, NaN, ±Infinity or a non-integer string; such
+  // a value cannot be a time bound, so it is shown as given rather than thrown (#359).
+  if (typeof seconds === "number" && !Number.isInteger(seconds)) return String(seconds);
+  if (typeof seconds === "string" && !/^\s*[-+]?\d+\s*$/.test(seconds)) return String(seconds);
+  const ms = BigInt(typeof seconds === "string" ? seconds.trim() : seconds) * 1_000n;
   // Past ±8.64e15 ms (the ECMAScript Date range) a time bound cannot be a date.
   if (ms > 8_640_000_000_000_000n || ms < -8_640_000_000_000_000n) return String(seconds);
   return formatDateTime(Number(ms), locale);

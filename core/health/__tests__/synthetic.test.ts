@@ -182,9 +182,14 @@ describe("synthetic critical-journey monitor (#269)", () => {
       const { fetchImpl, requests } = horizon(routes);
 
       const outcome = await runSyntheticMonitor(SERVICE, options(fetchImpl, { timeoutMs: 5 }).options);
+      // The journey stops at the failed step; the rest are listed as skipped (#231), never as the cause.
       expect(outcome.ok && outcome.value).toMatchObject({
         status: "unhealthy",
-        steps: [{ step: "horizon.root", ok: false, attempts: 3, errorCode: code }]
+        steps: [
+          { step: "horizon.root", ok: false, attempts: 3, errorCode: code },
+          { step: "operations.discover", ok: false, attempts: 0, errorCode: "skipped", skipped: true },
+          { step: "account.operations", ok: false, attempts: 0, errorCode: "skipped", skipped: true }
+        ]
       });
       expect(requests).toHaveLength(3);
     });
@@ -196,7 +201,9 @@ describe("synthetic critical-journey monitor (#269)", () => {
 
       const outcome = await runSyntheticMonitor(SERVICE, options(fetchImpl).options);
       expect(outcome.ok && outcome.value.steps).toEqual([
-        expect.objectContaining({ step: "horizon.root", attempts: 1, errorCode: "network_mismatch" })
+        expect.objectContaining({ step: "horizon.root", attempts: 1, errorCode: "network_mismatch" }),
+        expect.objectContaining({ step: "operations.discover", attempts: 0, skipped: true }),
+        expect.objectContaining({ step: "account.operations", attempts: 0, skipped: true })
       ]);
       expect(requests).toHaveLength(1);
     });
@@ -214,7 +221,9 @@ describe("synthetic critical-journey monitor (#269)", () => {
       const outcome = await runSyntheticMonitor(SERVICE, options(fetchImpl).options);
 
       expect(outcome.ok && outcome.value.status).toBe("unhealthy");
-      expect(outcome.ok && outcome.value.steps.at(-1)).toMatchObject({ step: failedStep, ok: false, errorCode: code });
+      expect(outcome.ok && outcome.value.steps.find((step) => !step.ok && !step.skipped)).toMatchObject({ step: failedStep, ok: false, errorCode: code });
+      // Telemetry names the real failure, never a skipped placeholder.
+      expect(outcome.ok && outcome.value.steps.filter((step) => !step.ok && !step.skipped)).toHaveLength(1);
     });
 
     it("reports degraded when ingestion lags or the run exceeds its latency budget", async () => {

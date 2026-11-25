@@ -63,3 +63,48 @@ export interface TransferRiskAssessment {
   readonly signals: readonly RiskSignal[];
   readonly code: TransferRiskCode;
 }
+
+/**
+ * Per-signal explanation for an explainable risk assessment (#417).
+ * Internal review data: never serialize to an attendee.
+ */
+export interface RiskSignalExplanation {
+  readonly signal: RiskSignal;
+  readonly weight: number;
+  readonly description: string;
+}
+
+/**
+ * Explainable risk assessment for high-impact actions (#417).
+ * Extends the base assessment with a per-signal breakdown and a human-readable
+ * summary. Internal review data: never expose to attendees.
+ */
+export interface ExplainableRiskAssessment extends TransferRiskAssessment {
+  readonly explanations: readonly RiskSignalExplanation[];
+  readonly summary: string;
+  readonly policyThresholds: {
+    readonly reviewScore: number;
+    readonly blockScore: number;
+  };
+}
+
+/**
+ * Explainer actor context for role-based disclosure (#461).
+ */
+export interface RiskExplainerActor {
+  readonly role: "maintainer" | "organizer" | "reviewer" | "attendee" | "anonymous";
+  readonly id?: string;
+}
+
+/**
+ * Sanitized explanation for untrusted or unprivileged callers (#461).
+ * Omits internal weights, policy thresholds, and signal telemetry.
+ */
+export interface SanitizedExplainableRiskAssessment {
+  readonly disposition: "allow" | "review" | "block";
+  readonly code: TransferRiskCode;
+  readonly summary: string;
+  readonly signalsCount: number;
+  readonly isSanitized: true;
+}
+

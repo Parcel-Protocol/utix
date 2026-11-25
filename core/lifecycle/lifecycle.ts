@@ -105,6 +105,7 @@ export interface LifecycleView {
 
 export interface LifecycleMachine {
   readonly definition: LifecycleDefinition;
+  readonly name: string;
   initial(): string;
   isState(value: unknown): value is string;
   isTerminal(state: string): boolean;
@@ -190,6 +191,7 @@ export function createLifecycle(definition: LifecycleDefinition): LifecycleMachi
 
   return {
     definition,
+    name: definition.name,
 
     initial(): string {
       return definition.initial;

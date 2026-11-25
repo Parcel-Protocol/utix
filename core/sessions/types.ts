@@ -81,6 +81,7 @@ export type SecurityEventType =
   | 'stale_session_timeout';
 
 export interface SecurityEvent {
+  eventId?: string;
   type: SecurityEventType;
   userId: string;
   sessionId?: string;
@@ -109,4 +110,12 @@ export interface RevocationReport {
   readonly timestamp: Date;
   readonly reason?: string;
 }
+
+export interface SecurityEventHandlingOptions {
+  readonly maxRetries?: number;
+  readonly backoffMs?: number;
+  readonly timeoutMs?: number;
+  readonly preserveCurrentDevice?: boolean;
+}
+
 
