@@ -29,3 +29,16 @@ export {
   type QuotaUserMessage,
   type WithQuotaRequest
 } from "@/core/quota/quota";
+
+export {
+  DEFAULT_RESOURCE_BUDGET_PROFILE,
+  evaluateResourceBudget,
+  grantEmergencyBudgetOverride,
+  runWorstCaseLoadTest,
+  type BudgetEvaluationCode,
+  type ResourceBudgetProfile,
+  type ResourceLimitSpec,
+  type WorstCaseLoadResult,
+  type WorstCaseScenario
+} from "@/core/quota/worst-case-load";
+
