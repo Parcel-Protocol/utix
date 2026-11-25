@@ -418,5 +418,18 @@ describe('RevocationHandler', () => {
         expect(result.code).toBe('invalid_security_event');
       }
     });
+
+    it('treats retried security events as idempotent', async () => {
+      const event: SecurityEvent = {
+        eventId: 'security-event-1',
+        type: 'password_changed',
+        userId,
+        timestamp: new Date(),
+        actor: { id: userId, role: 'user' },
+      };
+      const first = await handler.handleSecurityEvent(event);
+      const second = await handler.handleSecurityEvent(event);
+      expect(first).toEqual(second);
+    });
   });
 });

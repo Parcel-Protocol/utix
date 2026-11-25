@@ -1,0 +1,17 @@
+// Compatibility matrix for schema migrations
+// This file lists each schema version and the migrations it supports.
+// It is consumed by `generate-migration-matrix.mjs` for validation.
+{
+  "v1": {
+    "next": ["v2"],
+    "compatible": []
+  },
+  "v2": {
+    "next": ["v3"],
+    "compatible": ["v1"]
+  },
+  "v3": {
+    "next": [],
+    "compatible": ["v2", "v1"]
+  }
+}

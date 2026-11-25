@@ -81,3 +81,20 @@ export {
   type FaultEvaluation,
   type InjectedFailureRecord
 } from "@/core/testing/failure-injection";
+export {
+  runLoad,
+  checkBudget,
+  type LoadProfile,
+  type LoadReport,
+  type ResourceBudget,
+  type RetryPolicy
+} from "@/core/testing/load-budget";
+export {
+  RARE_FAULT_TYPES,
+  generateRareFailureFixture,
+  generateRareFailureCorpus,
+  installRareFailureFixture,
+  type RareFailureFixture,
+  type RareFailureKind,
+  type RareFailureOptions
+} from "@/core/testing/rare-failure-fixtures";

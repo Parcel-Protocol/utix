@@ -289,7 +289,10 @@ export function sanitizeExportRecord(
         out[key] = val;
       }
     } else {
-      out[key] = redact(val);
+      out[key] =
+        typeof val === "string" && /secret|seed|password|token|bearer|key/i.test(key) && !/public/i.test(key)
+          ? "[REDACTED]"
+          : redact(val);
     }
   }
 

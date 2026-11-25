@@ -81,6 +81,7 @@ export type SecurityEventType =
   | 'stale_session_timeout';
 
 export interface SecurityEvent {
+  eventId?: string;
   type: SecurityEventType;
   userId: string;
   sessionId?: string;

@@ -105,6 +105,10 @@ export function sortMixedStatusEvents<T extends MixedStatusEvent>(
   return [...filtered].sort(compareMixedStatusEvents);
 }
 
+/** Explicit aliases for status feeds and event feeds exposed by callers. */
+export const sortStatusList = sortMixedStatusRecords;
+export const sortEventList = sortMixedStatusEvents;
+
 export function pageMixedStatusRecords<T extends MixedStatusRecord>(
   records: readonly T[],
   options?: KeysetPageOptions<T>

@@ -69,6 +69,14 @@ const EMBEDDED_SECRET_PATTERN = /\b[SM][A-Z2-7]{55}\b/g;
 const EMBEDDED_BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/-]+\b/gi;
 const SENSITIVE_KEY_PATTERN = /secret|seed|key|token|password|passphrase|auth|credential|bearer|cookie/i;
 
+function containsUnredactedSensitiveValue(value: unknown, key?: string): boolean {
+  if (key && SENSITIVE_KEY_PATTERN.test(key)) return value !== "[REDACTED]";
+  if (typeof value === "string") return EMBEDDED_SECRET_PATTERN.test(value) || EMBEDDED_BEARER_PATTERN.test(value);
+  if (Array.isArray(value)) return value.some((item) => containsUnredactedSensitiveValue(item));
+  if (value && typeof value === "object") return Object.entries(value as Record<string, unknown>).some(([name, child]) => containsUnredactedSensitiveValue(child, name));
+  return false;
+}
+
 export function scrubSensitiveValue(value: unknown): { scrubbed: unknown; modified: boolean } {
   if (value === null || value === undefined) {
     return { scrubbed: value, modified: false };
@@ -349,8 +357,7 @@ export class OperationalDataRetentionManager {
       let scrubCompliant = true;
       if (policy.scrubSensitiveFields !== false) {
         for (const rec of activeRecords) {
-          const test = scrubSensitiveValue(rec);
-          if (test.modified) {
+          if (containsUnredactedSensitiveValue(rec)) {
             scrubCompliant = false;
             violations.push(`Active record "${rec.id ?? 'unknown'}" contains unredacted sensitive operational fields`);
             break;
@@ -409,11 +416,12 @@ export class OperationalDataRetentionManager {
     }
 
     const sweep = sweepResult.value;
+    const retainedIds = new Set(sweep.retainedRecords.map((record) => record.id).filter(Boolean));
     const retainedSet = new Set(sweep.retainedRecords);
     const deletedIds: string[] = [];
 
     for (const r of records) {
-      if (!retainedSet.has(r) && r.id) {
+      if (r.id && !retainedIds.has(r.id) && !retainedSet.has(r)) {
         deletedIds.push(r.id);
       }
     }

@@ -105,6 +105,27 @@ export const ownershipTransferMachine = createLifecycle({
   ]
 });
 
+/** Deterministic settlement dispute workflow. Resolved/rejected claims may be reopened once. */
+export const settlementDisputeMachine = createLifecycle({
+  name: "settlement_dispute",
+  initial: "open",
+  states: ["open", "investigating", "resolved", "rejected", "reopened"],
+  terminal: [],
+  transitions: [
+    { from: "open", event: "investigate", to: "investigating" },
+    { from: "open", event: "resolve", to: "resolved" },
+    { from: "open", event: "reject", to: "rejected" },
+    { from: "investigating", event: "resolve", to: "resolved" },
+    { from: "investigating", event: "reject", to: "rejected" },
+    { from: "investigating", event: "reopen", to: "reopened" },
+    { from: "reopened", event: "investigate", to: "investigating" },
+    { from: "reopened", event: "resolve", to: "resolved" },
+    { from: "reopened", event: "reject", to: "rejected" },
+    { from: "resolved", event: "reopen", to: "reopened" },
+    { from: "rejected", event: "reopen", to: "reopened" }
+  ]
+});
+
 /** Human labels for badges and API `label` fields. */
 export const LIFECYCLE_LABELS: Record<string, Record<string, string>> = {
   worker_job: {
@@ -136,10 +157,23 @@ export const LIFECYCLE_LABELS: Record<string, Record<string, string>> = {
     cancelled: "Cancelled",
     rejected: "Rejected",
     expired: "Expired"
+  },
+  settlement_dispute: {
+    open: "Open",
+    investigating: "Investigating",
+    resolved: "Resolved",
+    rejected: "Rejected",
+    reopened: "Reopened"
   }
 };
 
-export type CoreRecordKind = "worker_job" | "notification" | "export_envelope" | "operation" | "ownership_transfer";
+export type CoreRecordKind =
+  | "worker_job"
+  | "notification"
+  | "export_envelope"
+  | "operation"
+  | "ownership_transfer"
+  | "settlement_dispute";
 
 /** Every core record machine, keyed by record kind. */
 export const RECORD_MACHINES: Record<CoreRecordKind, LifecycleMachine> = {
@@ -147,7 +181,8 @@ export const RECORD_MACHINES: Record<CoreRecordKind, LifecycleMachine> = {
   notification: notificationMachine,
   export_envelope: exportEnvelopeMachine,
   operation: operationMachine,
-  ownership_transfer: ownershipTransferMachine
+  ownership_transfer: ownershipTransferMachine,
+  settlement_dispute: settlementDisputeMachine
 };
 
 export function recordMachine(kind: string): Result<LifecycleMachine, LifecycleErrorCode> {

@@ -93,6 +93,12 @@ export function triggerEmergencyDisable(
   });
 }
 
+/** Returns the active per-flag emergency disable record, if any (read-only copy). */
+export function getEmergencyDisableRecord(flag: FeatureFlag): EmergencyDisableRecord | null {
+  const record = emergencyDisables.get(flag);
+  return record?.active ? { ...record } : null;
+}
+
 /** Clears emergency disablement for a specific flag. */
 export function clearEmergencyDisable(flag: FeatureFlag): void {
   emergencyDisables.delete(flag);

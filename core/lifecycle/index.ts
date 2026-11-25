@@ -25,6 +25,7 @@ export {
   stateView,
   transitionRecord,
   workerJobMachine,
+  settlementDisputeMachine,
   type CoreRecordKind,
   type StateView
 } from "@/core/lifecycle/records";

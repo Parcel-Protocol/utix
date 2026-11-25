@@ -176,6 +176,18 @@ export class OwnershipTransferStore {
   }
 
   /**
+   * A claimed idempotency key whose operation then failed validation must be
+   * released, otherwise every retry with the same key is stuck on
+   * `idempotency_in_flight` until the key's TTL lapses (#449). Released keys
+   * re-run from scratch, so a retry observes the current state rather than a
+   * cached failure.
+   */
+  private releaseClaimOnError<T>(key: string | undefined, result: OwnershipResult<T>): OwnershipResult<T> {
+    if (key && !result.ok) this.idempotencyStore.abandon(key);
+    return result;
+  }
+
+  /**
    * Initiates a proposed ownership transfer.
    * Upholds authorization: caller must be current owner.
    * Upholds safe bounds: recipient cannot be self, expiry must be positive and bounded.
@@ -184,7 +196,8 @@ export class OwnershipTransferStore {
     const correlationId = params.correlationId ?? newCorrelationId();
     const nowMs = this.resolveNowMs(params.now);
 
-    return measureSync(
+    let claimed = false;
+    const result = measureSync(
       "ownership.propose",
       { actorType: "user", correlationId },
       () => {
@@ -205,6 +218,7 @@ export class OwnershipTransferStore {
           if (begun.value.replay && begun.value.record.response) {
             return ok(begun.value.record.response);
           }
+          claimed = true;
         }
 
         // 2. Validate Addresses & Principals
@@ -297,6 +311,7 @@ export class OwnershipTransferStore {
         return ok(proposal);
       }
     );
+    return this.releaseClaimOnError(claimed ? params.idempotencyKey : undefined, result);
   }
 
   /**
@@ -308,7 +323,8 @@ export class OwnershipTransferStore {
     const correlationId = params.correlationId ?? newCorrelationId();
     const nowMs = this.resolveNowMs(params.now);
 
-    return measureSync(
+    let claimed = false;
+    const result = measureSync(
       "ownership.accept",
       { actorType: "user", correlationId },
       () => {
@@ -324,6 +340,7 @@ export class OwnershipTransferStore {
           if (begun.value.replay && begun.value.record.response) {
             return ok(begun.value.record.response);
           }
+          claimed = true;
         }
 
         const raw = this.proposalsById.get(params.transferId);
@@ -384,6 +401,7 @@ export class OwnershipTransferStore {
         return ok(acceptedProposal);
       }
     );
+    return this.releaseClaimOnError(claimed ? params.idempotencyKey : undefined, result);
   }
 
   /**

@@ -59,7 +59,14 @@ const boundaries = [
   { file: "core/authorizations/store.ts", emitter: "authorization.revoked" },
   { file: "core/authorizations/store.ts", emitter: "authorization.cleaned_up" },
   { file: "core/status/service-mode.ts", emitter: "service_mode.changed" },
-  { file: "core/status/service-mode.ts", emitter: "service_mode.expired" }
+  { file: "core/status/service-mode.ts", emitter: "service_mode.expired" },
+  { file: "core/disputes/store.ts", emitter: "settlement_dispute.opened" },
+  { file: "core/disputes/store.ts", emitter: "settlement_dispute.investigating" },
+  { file: "core/disputes/store.ts", emitter: "settlement_dispute.evidence_added" },
+  { file: "core/disputes/store.ts", emitter: "settlement_dispute.note_added" },
+  { file: "core/disputes/store.ts", emitter: "settlement_dispute.resolved" },
+  { file: "core/disputes/store.ts", emitter: "settlement_dispute.rejected" },
+  { file: "core/disputes/store.ts", emitter: "settlement_dispute.reopened" }
 ];
 
 const sources = new Map();

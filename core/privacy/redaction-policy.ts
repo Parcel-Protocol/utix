@@ -10,6 +10,7 @@
 import { redact, type TelemetryEvent } from "@/core/telemetry/telemetry";
 import {
   applyFieldLevelAuthorization,
+  DEFAULT_SENSITIVE_FIELD_RULES,
   sanitizeExportRecord,
   type ExportActor,
   type FieldAuthorizationRule
@@ -98,8 +99,25 @@ export function sanitizeExportRecordWithPrivacy(
   actor: ExportActor,
   customRules?: readonly FieldAuthorizationRule[]
 ): Record<string, unknown> {
-  const sanitized = sanitizeExportRecord(record);
-  return applyFieldLevelAuthorization(sanitized, actor, customRules);
+  const rules = [...DEFAULT_SENSITIVE_FIELD_RULES, ...(customRules ?? [])];
+  const sanitized = sanitizeExportRecord(record, actor, rules);
+  const authResult = applyFieldLevelAuthorization(sanitized, actor, { rules });
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(authResult.record)) {
+    if (value === "[FILTERED: UNAUTHORIZED]") {
+      result[key] = "[MASKED]";
+    } else {
+      result[key] = value;
+    }
+  }
+  for (const [key, val] of Object.entries(record)) {
+    if (/secret|seed|password|token|bearer|key/i.test(key) && !/public/i.test(key)) {
+      if (result[key] === undefined && val !== undefined) {
+        result[key] = "[REDACTED]";
+      }
+    }
+  }
+  return result;
 }
 
 /**

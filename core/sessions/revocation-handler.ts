@@ -31,6 +31,7 @@ export class RevocationHandler {
   private revocationInProgress = new Map<string, Promise<RevocationReport>>();
   private lastPruneTime: Map<string, Date> = new Map();
   private revocationErrors: RevocationError[] = [];
+  private handledSecurityEvents = new Map<string, RevocationReport>();
 
   constructor(private options: RevocationOptions = {}) {}
 
@@ -189,7 +190,13 @@ export class RevocationHandler {
 
     const options = { ...this.options, ...opts };
 
-    switch (event.type) {
+    if (event.eventId) {
+      const previous = this.handledSecurityEvents.get(event.eventId);
+      if (previous) return ok(previous);
+    }
+
+    const result = await (async () => {
+      switch (event.type) {
       case 'account_compromised':
         return this.revokeAllUserSessionsAsync(event.userId, event, undefined, options);
 
@@ -254,7 +261,10 @@ export class RevocationHandler {
 
       default:
         return err('invalid_security_event');
-    }
+      }
+    })();
+    if (result.ok && event.eventId) this.handledSecurityEvents.set(event.eventId, result.value);
+    return result;
   }
 
   private async performRevocation(

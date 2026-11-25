@@ -121,7 +121,19 @@ export const SENSITIVE_ACTIONS = [
   /** A stale cache or index projection was repaired (or the repair was refused) (#356, #411). */
   "projection.repaired",
   /** A stale-projection repair was rolled back from its backup snapshot (#356, #411). */
-  "projection.restored"
+  "projection.restored",
+  /** A settlement dispute was opened (or opening was refused). */
+  "settlement_dispute.opened",
+  /** A settlement dispute investigation began (or was refused). */
+  "settlement_dispute.investigating",
+  /** Evidence or a private/public note was added to a settlement dispute. */
+  "settlement_dispute.evidence_added",
+  "settlement_dispute.note_added",
+  /** A settlement dispute was resolved or rejected. */
+  "settlement_dispute.resolved",
+  "settlement_dispute.rejected",
+  /** A final settlement dispute decision was reopened for further investigation. */
+  "settlement_dispute.reopened"
 ] as const;
 
 export type AuditAction = (typeof SENSITIVE_ACTIONS)[number];
@@ -444,21 +456,61 @@ export function createAuditTrail(options: AuditOptions = {}): AuditTrail {
   const storage = options.storage ?? browserStorage();
   const key = `${AUDIT_STORAGE_PREFIX}events`;
 
-  function readAll(): AuditEvent[] {
+  // Parsed view of the stored trail, keyed by the exact raw string it came
+  // from. Any write from elsewhere (another tab, `reset`) changes the raw
+  // string and forces a re-parse, so the cache can never serve stale events.
+  // `clean` means every stored entry passed `isEvent`, so the raw string can
+  // be appended to verbatim.
+  // `head` (raw minus its closing `]`) is kept after our own appends so the
+  // next append concatenates instead of slicing, which would copy the blob.
+  let cache: { raw: string; events: AuditEvent[]; clean: boolean; head?: string } | undefined;
+
+  function load(): { raw: string | null; events: AuditEvent[]; clean: boolean; head?: string } {
     const raw = storage.getItem(key);
-    if (!raw) return [];
+    if (!raw) return { raw, events: [], clean: false };
+    if (cache && cache.raw === raw) return cache;
     try {
       const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.filter(isEvent);
+      if (!Array.isArray(parsed)) return { raw, events: [], clean: false };
+      const events = parsed.filter(isEvent);
+      cache = { raw, events, clean: events.length === parsed.length };
+      return cache;
     } catch {
-      return [];
+      return { raw, events: [], clean: false };
     }
+  }
+
+  function readAll(): AuditEvent[] {
+    return load().events.slice();
   }
 
   function writeAll(events: readonly AuditEvent[]): void {
     // Redaction at the boundary: nothing unscrubbed is ever persisted.
     storage.setItem(key, JSON.stringify(redact(events)));
+  }
+
+  /**
+   * Appends one event. Stored events were redacted when written, so only the
+   * new one is scrubbed, and a clean trail is extended in place instead of
+   * being re-parsed, re-redacted and re-serialized. Before this, every write
+   * cost O(trail) regex + JSON work, so n writes cost O(n^2) (#392).
+   */
+  function append(event: AuditEvent): void {
+    const json = JSON.stringify(redact(event));
+    const current = load();
+    // `head` is only set by our own append, whose raw ends in `]` by
+    // construction; checking endsWith on that concatenated string would
+    // flatten (copy) it, so it runs only for a blob read from storage.
+    const spliceable = current.head !== undefined || (current.raw?.endsWith("]") ?? false);
+    if (current.clean && current.raw && current.events.length > 0 && spliceable) {
+      const head = `${current.head ?? current.raw.slice(0, -1)},${json}`;
+      const raw = `${head}]`;
+      storage.setItem(key, raw);
+      current.events.push(JSON.parse(json) as AuditEvent);
+      cache = { raw, events: current.events, clean: true, head };
+      return;
+    }
+    storage.setItem(key, JSON.stringify([...current.events, JSON.parse(json)]));
   }
 
   /**
@@ -508,7 +560,7 @@ export function createAuditTrail(options: AuditOptions = {}): AuditTrail {
       if (!isEvent(event)) return err("invalid_audit_field");
 
       // Append-only: the previous events are never rewritten, only extended.
-      writeAll([...readAll(), event]);
+      append(event);
       commitToLedger(event);
       return ok(event);
     },
