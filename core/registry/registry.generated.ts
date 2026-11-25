@@ -28,6 +28,7 @@ import { manifest as feeStats } from "@/features/fee-stats/manifest";
 import { manifest as freighterConnect } from "@/features/freighter-connect/manifest";
 import { manifest as hashCalculator } from "@/features/hash-calculator/manifest";
 import { manifest as horizonHealth } from "@/features/horizon-health/manifest";
+import { manifest as keypairGenerator } from "@/features/keypair-generator/manifest";
 import { manifest as ledgerLookup } from "@/features/ledger-lookup/manifest";
 import { manifest as ledgerRangePlanner } from "@/features/ledger-range-planner/manifest";
 import { manifest as liquidityPoolCalculator } from "@/features/liquidity-pool-calculator/manifest";
@@ -51,7 +52,9 @@ import { manifest as preconditionsExplainer } from "@/features/preconditions-exp
 import { manifest as priceFractionLab } from "@/features/price-fraction-lab/manifest";
 import { manifest as reserveCalculator } from "@/features/reserve-calculator/manifest";
 import { manifest as resultCodeExplainer } from "@/features/result-code-explainer/manifest";
+import { manifest as scvalCodec } from "@/features/scval-codec/manifest";
 import { manifest as sep10Inspector } from "@/features/sep10-inspector/manifest";
+import { manifest as sep12Fields } from "@/features/sep12-fields/manifest";
 import { manifest as sep7SignatureVerifier } from "@/features/sep7-signature-verifier/manifest";
 import { manifest as sequenceInspector } from "@/features/sequence-inspector/manifest";
 import { manifest as signatureVerifier } from "@/features/signature-verifier/manifest";
@@ -102,6 +105,7 @@ export const generatedFeatures: FeatureEntry[] = [
   { manifest: freighterConnect, load: async () => { const mod = await import("@/features/freighter-connect/panel"); return mod.default as ComponentType; } },
   { manifest: hashCalculator, load: async () => { const mod = await import("@/features/hash-calculator/panel"); return mod.default as ComponentType; } },
   { manifest: horizonHealth, load: async () => { const mod = await import("@/features/horizon-health/panel"); return mod.default as ComponentType; } },
+  { manifest: keypairGenerator, load: async () => { const mod = await import("@/features/keypair-generator/panel"); return mod.default as ComponentType; } },
   { manifest: ledgerLookup, load: async () => { const mod = await import("@/features/ledger-lookup/panel"); return mod.default as ComponentType; } },
   { manifest: ledgerRangePlanner, load: async () => { const mod = await import("@/features/ledger-range-planner/panel"); return mod.default as ComponentType; } },
   { manifest: liquidityPoolCalculator, load: async () => { const mod = await import("@/features/liquidity-pool-calculator/panel"); return mod.default as ComponentType; } },
@@ -125,7 +129,9 @@ export const generatedFeatures: FeatureEntry[] = [
   { manifest: priceFractionLab, load: async () => { const mod = await import("@/features/price-fraction-lab/panel"); return mod.default as ComponentType; } },
   { manifest: reserveCalculator, load: async () => { const mod = await import("@/features/reserve-calculator/panel"); return mod.default as ComponentType; } },
   { manifest: resultCodeExplainer, load: async () => { const mod = await import("@/features/result-code-explainer/panel"); return mod.default as ComponentType; } },
+  { manifest: scvalCodec, load: async () => { const mod = await import("@/features/scval-codec/panel"); return mod.default as ComponentType; } },
   { manifest: sep10Inspector, load: async () => { const mod = await import("@/features/sep10-inspector/panel"); return mod.default as ComponentType; } },
+  { manifest: sep12Fields, load: async () => { const mod = await import("@/features/sep12-fields/panel"); return mod.default as ComponentType; } },
   { manifest: sep7SignatureVerifier, load: async () => { const mod = await import("@/features/sep7-signature-verifier/panel"); return mod.default as ComponentType; } },
   { manifest: sequenceInspector, load: async () => { const mod = await import("@/features/sequence-inspector/panel"); return mod.default as ComponentType; } },
   { manifest: signatureVerifier, load: async () => { const mod = await import("@/features/signature-verifier/panel"); return mod.default as ComponentType; } },
