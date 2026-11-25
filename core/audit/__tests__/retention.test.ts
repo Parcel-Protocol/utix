@@ -35,6 +35,18 @@ describe("Operational Data Retention and Deletion (#259)", () => {
   ];
 
   describe("normal path", () => {
+    it("does not report scrubbed retained records as deleted", async () => {
+      const result = await OperationalDataRetentionManager.enforceRetentionWithVerification(
+        [{ id: "keep", at: "2026-10-16T00:00:00.000Z", token: "secret" }],
+        { recordKind: "operational_log", ttlMs: 30 * 24 * 60 * 60 * 1000 },
+        { actor: maintainerActor, reason: "verify_scrub", now: () => Date.parse("2026-10-17T00:00:00.000Z") }
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.verification.deletedIdsCount).toBe(0);
+        expect(result.value.verification.valid).toBe(true);
+      }
+    });
     it("enforces retention policy by removing records exceeding TTL", async () => {
       const fixedNow = Date.parse("2026-10-17T00:00:00.000Z");
       const policy: RetentionPolicy = {

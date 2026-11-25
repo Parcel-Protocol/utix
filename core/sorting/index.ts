@@ -4,6 +4,8 @@ export {
   compareMixedStatusRecords,
   sortMixedStatusEvents,
   sortMixedStatusRecords,
+  sortStatusList,
+  sortEventList,
   pageMixedStatusEvents,
   pageMixedStatusRecords,
   verifyDeterministicOrdering,

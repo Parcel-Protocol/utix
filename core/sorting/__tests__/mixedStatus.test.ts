@@ -4,10 +4,18 @@ import {
   pageMixedStatusRecords,
   sortMixedStatusEvents,
   sortMixedStatusRecords,
+  sortStatusList,
+  sortEventList,
   verifyDeterministicOrdering
 } from "@/core/sorting";
 
 describe("mixed-status deterministic sorting", () => {
+  it("exposes deterministic status and event list helpers", () => {
+    const records = [{ id: "b", status: "pending" }, { id: "a", status: "pending" }];
+    const events = [{ id: "b", status: "completed", at: 1 }, { id: "a", status: "completed", at: 1 }];
+    expect(sortStatusList(records).map((item) => item.id)).toEqual(["a", "b"]);
+    expect(sortEventList(events).map((item) => item.id)).toEqual(["a", "b"]);
+  });
   it("orders records by actionable status and deterministic tie-breakers", () => {
     const input = [
       { id: "done", status: "completed", updatedAt: "2026-01-03T00:00:00Z" },

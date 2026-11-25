@@ -118,6 +118,7 @@ describe("runPolicySimulation", () => {
       if (!result.ok) return;
 
       expect(result.value.examples).toHaveLength(2);
+    expect(result.value.affectedRecordIds).toEqual(expect.arrayContaining(result.value.examples.map((example) => example.id)));
       const first = result.value.examples[0];
       expect(first.diffs).toBeDefined();
       expect(first.diffs!.length).toBeGreaterThan(0);

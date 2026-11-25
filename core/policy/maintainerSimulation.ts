@@ -86,6 +86,7 @@ export interface MaintainerSimulationResult {
   /** The most severe affected records, at most `maxExamples`. */
   readonly examples: readonly AffectedRecordExample[];
   readonly omittedExamples: number;
+  readonly affectedRecordIds: readonly string[];
   /** Requested `recordIds` that matched no record. */
   readonly unmatchedRecordIds: readonly string[];
   readonly previewSummary?: PreviewSummary;
@@ -335,6 +336,7 @@ export function runPolicySimulation(
       `risk ${report.overallRiskLevel}, recommended action: ${report.executionPlan.recommendedAction}.`,
     examples,
     omittedExamples: all.length - examples.length,
+    affectedRecordIds: all.map((example) => example.id),
     unmatchedRecordIds,
     previewSummary
   });
